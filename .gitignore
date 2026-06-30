@@ -1,6 +1,12 @@
 # OS
 .DS_Store
 
+# IDE / editor
+.kiro/
+.vscode/
+.idea/
+*.swp
+
 # Python
 __pycache__/
 *.py[cod]
