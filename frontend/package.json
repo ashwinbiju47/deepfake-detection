@@ -1,0 +1,37 @@
+{
+  "name": "deepfake-detection-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "React + TypeScript dashboard for the Real-Time Deepfake Detection Platform",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "chart.js": "4.4.6",
+    "d3": "7.9.0",
+    "react": "18.3.1",
+    "react-chartjs-2": "5.2.0",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/d3": "7.4.3",
+    "@types/node": "22.9.0",
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "@vitejs/plugin-react": "4.3.3",
+    "autoprefixer": "10.4.20",
+    "fast-check": "3.23.1",
+    "jsdom": "25.0.1",
+    "postcss": "8.4.47",
+    "tailwindcss": "3.4.14",
+    "typescript": "5.6.3",
+    "vite": "5.4.10",
+    "vitest": "2.1.4"
+  }
+}
