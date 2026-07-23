@@ -79,3 +79,19 @@ This document contains potential questions and suggested answers for the project
 
 **Q14: Are there any intellectual property (IP) or licensing issues with the technologies you are using?**
 **A14:** We are utilizing several open-source libraries (Django, React, PyTorch, OpenCV). Professionally, we must carefully track the licenses of these dependencies (e.g., MIT, Apache 2.0, GPL) to ensure our usage complies with their terms. Additionally, any datasets used for training (like FaceForensics++ or DFDC) have their own specific usage agreements (often restricted to academic/research non-commercial use) that we must strictly adhere to.
+
+---
+
+## 7. 50% Milestone Presentation Questions
+
+**Q15: When looking at the UI, this looks like just a simple upload button, right? What is actually happening here?**
+**A15:** While the UI is intentionally simple and user-friendly, the architecture behind that upload button is highly complex. If we processed videos directly on the web server, the website would freeze and crash. Instead, the upload button triggers an asynchronous pipeline: the Django API securely saves metadata to a PostgreSQL database, then passes a task to a Redis message broker. A completely separate Celery background worker picks up the video and processes it without blocking the main server, ensuring the website remains extremely fast.
+
+**Q16: How is the progress bar updating smoothly if the processing is happening entirely in the background?**
+**A16:** We implemented a real-time data streaming architecture using Django Channels and WebSockets. As the background worker reaches processing milestones, it pushes live data updates directly to the user's browser. The React frontend listens to these WebSocket events and updates the progress bar dynamically, meaning the user never has to refresh the page to see their results.
+
+**Q17: Why did you mock the AI Deep Learning models for this 50% milestone instead of running the real PyTorch weights?**
+**A17:** For this 50% sprint, the core objective was to build and prove the end-to-end full-stack infrastructure. Loading massive PyTorch models and running OpenCV on a standard laptop during a live demo risks severe memory overload and system crashes. By mocking the AI with a lightweight stub, we guarantee a flawless demonstration of the data pipeline. The remaining 50% of the project focuses solely on dropping the real trained models into this established, working pipeline.
+
+**Q18: What are you going to do for the remaining 50% of the project?**
+**A18:** Now that the complex infrastructure is 100% complete, the next phase will integrate the actual PyTorch Neural Networks for both Visual and Audio deepfake detection. We will also activate the Explainable AI (XAI) Grad-CAM heatmap generation to visually show users why a video was flagged, and enable the PDF summary report generation feature.
