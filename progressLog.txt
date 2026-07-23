@@ -1,0 +1,15 @@
+Project Progress Summary (50% Milestone)
+
+While the user interface might look like a simple upload button, the underlying system we have built is a highly complex, asynchronous, full-stack architecture designed to handle heavy video processing without crashing. Here is a breakdown of what we have accomplished so far:
+
+1. Asynchronous Architecture (The Background Engine)
+Instead of processing videos directly on the web server (which would cause the website to freeze and crash for the user), we built an asynchronous task pipeline. When a video is uploaded, our Django backend immediately hands the file off to a Redis message broker. A completely separate background worker (Celery) picks up this task and processes the video behind the scenes. This ensures the website remains fast and responsive no matter how large the video is.
+
+2. Real-Time Data Streaming (WebSockets)
+We implemented a live WebSocket connection between the background worker and the user's browser using Django Channels. As the Celery worker reaches different stages of processing the video, it pushes live data updates directly to the frontend. This is what powers the dynamic progress bar on the dashboard, allowing the user to see exactly what is happening in real-time without ever needing to refresh the page.
+
+3. Robust Full-Stack Environment
+We fully configured a modern React frontend that communicates seamlessly with a Python Django REST API. We also successfully mapped and migrated a PostgreSQL relational database to securely store user sessions, upload records, and analysis results persistently.
+
+4. Demonstration Readiness
+For this 50% presentation sprint, we created a specialized version of the code that temporarily bypasses the heavy Artificial Intelligence models. Instead, the background worker uses a lightweight mock to simulate processing and output a result. This guarantees that during the presentation, the entire data pipeline—from the browser, to the database, to the background worker, and streaming back to the progress bar—can be demonstrated flawlessly without risking memory overload on the presentation laptop.
