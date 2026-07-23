@@ -1,0 +1,81 @@
+# Viva Question Bank: Real-Time Deepfake Detection Platform
+
+This document contains potential questions and suggested answers for the project viva presentation, structured around the required evaluation criteria.
+
+---
+
+## 1. Work to Date: Background and Motivation
+
+**Q1: What is the primary motivation behind developing this deepfake detection platform?**
+**A1:** The rapid advancement in generative AI has made it incredibly easy to create highly realistic deepfakes. This poses significant threats, including misinformation, identity theft, and fraud. The motivation is to provide a near real-time, highly accurate tool that not only detects these manipulations but also explains *why* a video is considered a deepfake, enhancing trust through Explainable AI (XAI).
+
+**Q2: Why did you choose a multi-modal approach (audio and visual) instead of just focusing on video frames?**
+**A2:** Deepfakes have evolved beyond just face-swapping; high-quality deepfakes now often include synthetic or cloned audio. Focusing solely on visual artifacts leaves a vulnerability if the attacker perfectly manipulates the video but generates fake audio. A multi-modal fusion approach increases robustness and overall accuracy by analyzing both signals independently before making a final classification.
+
+**Q3: How does Explainable AI (XAI) fit into your project, and why is it important?**
+**A3:** Most deep learning models are "black boxes," which makes it hard for users (especially non-technical ones) to trust their output. We are integrating XAI, specifically Grad-CAM heatmaps, to visually highlight the spatial areas in the video frames that contributed most to the model's decision (e.g., artifacts around the mouth or eyes). This transparency is crucial for user trust and accountability.
+
+---
+
+## 2. Progress: Objectives Achieved & Specifications
+
+**Q4: What specific objectives have you achieved so far in the implementation?**
+**A4:** Currently, we are at about 23% of the implementation phase. We have successfully completed the project scaffolding, configured the backend (Django/DRF) and frontend (React/Vite) environments, and implemented a GDPR-compliant persistence layer (separating media from metadata). We've also fully built the upload service with fail-fast validation, and completed the frame extraction and face isolation modules (using MTCNN/OpenCV), which successfully sample video frames at >= 1 fps and isolate facial regions exceeding 5% of the frame area.
+
+**Q5: Can you elaborate on the 'fail-closed validation' and why you implemented it?**
+**A5:** In our upload service, 'fail-closed' means that if an uploaded file is unverifiable or encounters any decoding issue during our initial probe, we reject it outright and do not create an AnalysisSession in the database. This prevents our storage and database from being clogged with corrupt, malicious, or unprocessable files, ensuring system stability and saving compute resources.
+
+**Q6: What is your database design approach regarding the video files uploaded by users?**
+**A6:** We implemented a strict separation of media and metadata. The PostgreSQL database only stores metadata (session IDs, status, likelihood scores). The actual video bytes are stored in transient, per-session directories on the file system, which are designed to be purged completely once the analysis is done, directly addressing privacy and GDPR requirements.
+
+---
+
+## 3. Problems Encountered and Resolutions
+
+**Q7: What has been the most significant technical challenge you've faced so far, and how did you resolve it?**
+**A7:** One challenge was ensuring the core business logic (like frame extraction and face detection) could be heavily tested without requiring a full GPU setup, native CV libraries, or a database on every test run. We resolved this by using dependency injection for the heavy backends (OpenCV, MTCNN). We created in-memory decoders and deterministic inference stubs, allowing us to run rigorous property-based tests (via Hypothesis) on our logic purely and quickly.
+
+**Q8: Have you encountered any issues with frame extraction performance?**
+**A8:** Initially, decoding every single frame of a high-resolution video is computationally expensive and slow. We addressed this by implementing a targeted sampling strategy (extracting frames at dynamically calculated steps to guarantee >= 1 fps) rather than every single frame. We also implemented a fast face-area threshold (5%), aggressively discarding frames that don't contain a clear, prominent face to save downstream ML processing time.
+
+---
+
+## 4. Future Plan
+
+**Q9: What are the immediate next steps in your implementation plan?**
+**A9:** The immediate next steps are to implement the Audio extraction and spectrogram generation (Task 5), followed by integrating the actual PyTorch ML inference models for both vision and audio (Task 6). After that, we will implement the Fusion Engine (Task 7) to combine these modalities deterministically and assign a final label based on our configurable decision threshold.
+
+**Q10: How do you plan to achieve the "near real-time" non-functional requirement?**
+**A10:** We will decouple the HTTP upload requests from the heavy ML inference using Celery as an asynchronous task queue and Redis as a message broker. Furthermore, we are setting up Django Channels (WebSockets) to stream processing events, progress updates, and XAI heatmaps back to the React frontend iteratively as they are generated, rather than making the user wait for the entire video to finish processing in a blocking HTTP call.
+
+**Q11: How will the system handle network interruptions during the WebSocket streaming?**
+**A11:** Our WebSocket design includes an append-only, sequence-numbered stream event log in the database. When the React client connects, it will establish a last known sequence number (`lastSeq`). If the connection drops and reconnects, it can request to resume from that sequence number, allowing gap-free replay of missed progress events or heatmaps.
+
+**Q12: How exactly will the Media Purger work to ensure GDPR compliance?**
+**A12:** We are planning a dedicated Celery background task called the `Media_Purger`. It will monitor the transient storage directory and aggressively delete the raw media files once an AnalysisSession reaches a terminal state (COMPLETED, FAILED, or CANCELED) or exceeds a configured timeout deadline (e.g., 60 seconds). 
+
+**Q13: How will you evaluate the accuracy of your models once implemented?**
+**A13:** We have planned a Model Evaluation pipeline (Task 12) that will run our inference engine against established datasets (like FaceForensics++). It will calculate comprehensive metrics including Precision, Recall, F1-Score, and a Confusion Matrix to ensure we meet our non-functional requirement of a minimum 85% baseline accuracy.
+
+**Q14: Are there any "Should-Have" or "Could-Have" features planned for later stages?**
+**A14:** Yes, once the core detection pipeline is stable, we plan to add support for external URL inputs (like YouTube links), generate downloadable PDF summary reports, and fully implement the Grad-CAM Explainable AI overlays (Task 15) to visually justify the model's decisions on the frontend dashboard.
+
+---
+
+## 5. Ethics Aspects
+
+**Q11: What are the primary ethical considerations of building a deepfake detector?**
+**A11:** The main ethical consideration is data privacy and consent. Users are uploading potentially sensitive videos containing real people. We must ensure these videos are not used for unintended purposes, stored indefinitely, or leaked. Additionally, there is the ethical concern of "false positives" (flagging a genuine video as fake), which could damage someone's reputation. We mitigate this by providing XAI (showing *why* we flagged it) and ensuring our model evaluation meets a high baseline accuracy (>= 85%).
+
+**Q12: Could your tool be reverse-engineered by malicious actors to create better deepfakes?**
+**A12:** This is a known risk in adversarial machine learning. Providing highly detailed XAI heatmaps could theoretically help an attacker understand what artifacts our model detects and optimize their generator to avoid them. We balance this by providing enough explanation for user trust without exposing the exact raw weights, architectures, or gradients of our underlying models.
+
+---
+
+## 6. Legal and Professional Issues
+
+**Q13: How does your project comply with data protection laws like GDPR?**
+**A13:** GDPR compliance is baked into our architecture. We do not store media in the database. Video files are kept in transient storage and we have designed a specific background task (Media_Purger) to aggressively delete the raw media immediately after the session concludes, times out, or fails. We only retain the metadata and the final classification report.
+
+**Q14: Are there any intellectual property (IP) or licensing issues with the technologies you are using?**
+**A14:** We are utilizing several open-source libraries (Django, React, PyTorch, OpenCV). Professionally, we must carefully track the licenses of these dependencies (e.g., MIT, Apache 2.0, GPL) to ensure our usage complies with their terms. Additionally, any datasets used for training (like FaceForensics++ or DFDC) have their own specific usage agreements (often restricted to academic/research non-commercial use) that we must strictly adhere to.

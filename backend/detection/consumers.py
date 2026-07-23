@@ -1,21 +1,20 @@
-"""WebSocket consumers (Result_Streamer).
+"""WebSocket consumers (Result_Streamer) (Task 10.1, Requirements 5, 7).
 
-A minimal consumer is provided so the ASGI routing is valid in the skeleton.
-The full event-log / replay logic (Requirements 5.x, 7.x) is implemented in
-Task 10.1.
+Streams progress, result, and error events to connected clients and supports
+reconnection replay via `resume {last_seq}` messages.
 """
 
 from __future__ import annotations
 
+from typing import Any, Dict
+from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
+
+from detection.services.streamer import StreamService
 
 
 class AnalysisConsumer(AsyncJsonWebsocketConsumer):
-    """Streams progress/results for a single ``Analysis_Session``.
-
-    Each session uses the channel-layer group ``analysis_{session_id}`` so
-    worker-published events fan out to the connected dashboard.
-    """
+    """Streams progress/results for a single ``Analysis_Session``."""
 
     async def connect(self) -> None:
         self.session_id = self.scope["url_route"]["kwargs"]["session_id"]
@@ -28,6 +27,17 @@ class AnalysisConsumer(AsyncJsonWebsocketConsumer):
         if group_name is not None:
             await self.channel_layer.group_discard(group_name, self.channel_name)
 
-    async def stream_event(self, event: dict) -> None:
+    async def receive_json(self, content: Dict[str, Any], **kwargs: Any) -> None:
+        """Handle incoming messages from WebSocket client (e.g. resume command)."""
+        action = content.get("action")
+        if action == "resume":
+            last_seq = content.get("last_seq", 0)
+            missed_events = await database_sync_to_async(StreamService.get_events_after)(
+                self.session_id, last_seq
+            )
+            for event_payload in missed_events:
+                await self.send_json(event_payload)
+
+    async def stream_event(self, event: Dict[str, Any]) -> None:
         """Relay an event published to the session group to the client."""
         await self.send_json(event.get("payload", {}))

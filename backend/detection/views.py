@@ -82,24 +82,29 @@ def create_analysis(request: Request) -> Response:
             ),
         )
 
-    # --- URL submission extension point (Requirement 10, Task 14) ---------
+    # --- URL submission (Requirement 10, Task 14) ------------------------
     if "url" in request.data:
-        if not settings.EXTERNAL_URL_ENABLED:
+        url_str = str(request.data.get("url") or "")
+        result = UploadService().submit_url(url_str)
+        if result["accepted"]:
             return Response(
-                {
-                    "error_code": "URL_INPUT_DISABLED",
-                    "message": "External URL input is not enabled.",
-                },
-                status=status.HTTP_400_BAD_REQUEST,
+                {"session_id": result["session_id"]},
+                status=status.HTTP_202_ACCEPTED,
             )
-        # Implemented in Task 14 (scheme/reachability/streaming-size guard).
+        error_code = result["error_code"] or "BAD_REQUEST"
+        status_code = status.HTTP_400_BAD_REQUEST
+        if error_code == "BAD_SCHEME" or error_code == "URL_INPUT_DISABLED":
+            status_code = status.HTTP_400_BAD_REQUEST
+        elif error_code == "TOO_LARGE":
+            status_code = status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+        elif error_code == "URL_UNREACHABLE" or error_code == "UNDECODABLE":
+            status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+
         return Response(
-            {
-                "error_code": "NOT_IMPLEMENTED",
-                "message": "URL submission is not yet implemented.",
-            },
-            status=status.HTTP_501_NOT_IMPLEMENTED,
+            {"error_code": error_code, "message": result["message"]},
+            status=status_code,
         )
+
 
     return Response(
         {
@@ -108,3 +113,65 @@ def create_analysis(request: Request) -> Response:
         },
         status=status.HTTP_400_BAD_REQUEST,
     )
+
+
+@api_view(["GET"])
+def get_evaluation(_request: Request, run_id: str) -> Response:
+    """Fetch model evaluation details (``GET /api/evaluations/<run_id>``, Requirement 8.3)."""
+    from detection.models import ModelEvaluation
+
+    try:
+        eval_run = ModelEvaluation.objects.get(run_id=run_id)
+        metrics = getattr(eval_run, "metrics", None)
+        return Response(
+            {
+                "run_id": str(eval_run.run_id),
+                "dataset": eval_run.dataset,
+                "split": eval_run.split,
+                "accuracy": eval_run.accuracy,
+                "meets_baseline": eval_run.meets_baseline,
+                "timestamp": eval_run.timestamp.isoformat() if eval_run.timestamp else None,
+                "metrics": {
+                    "confusion_matrix": metrics.confusion_matrix if metrics else {},
+                    "precision": metrics.precision if metrics else 0.0,
+                    "recall": metrics.recall if metrics else 0.0,
+                    "f1_score": metrics.f1_score if metrics else 0.0,
+                }
+                if metrics
+                else None,
+            }
+        )
+    except ModelEvaluation.DoesNotExist:
+        return Response(
+            {"error_code": "NOT_FOUND", "message": "Evaluation run not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+
+@api_view(["GET"])
+def get_report(_request: Request, session_id: str) -> Response:
+    """Generate and serve PDF report (``GET /api/analyses/<session_id>/report``, Requirement 12.2)."""
+    from django.http import HttpResponse
+    from detection.services.report import ReportGenerator
+
+    result = ReportGenerator.generate(session_id)
+    if result.success and result.pdf_bytes:
+        response = HttpResponse(result.pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="report_{session_id}.pdf"'
+        return response
+
+    error_code = result.error_code or "FAILED"
+    status_code = status.HTTP_400_BAD_REQUEST
+    if error_code == "SESSION_INCOMPLETE" or error_code == "REPORT_DISABLED":
+        status_code = status.HTTP_400_BAD_REQUEST
+    elif error_code == "NOT_FOUND":
+        status_code = status.HTTP_404_NOT_FOUND
+    else:
+        status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+
+    return Response(
+        {"error_code": error_code, "message": result.message},
+        status=status_code,
+    )
+
+

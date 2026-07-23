@@ -13,21 +13,21 @@ celery==5.4.0
 redis==5.0.4
 
 # Persistence (PostgreSQL driver for the Django ORM)
-psycopg[binary]==3.1.19
+psycopg[binary]
 
 # Configuration
 python-dotenv==1.0.1
 
 # ML inference
-torch==2.3.0
-torchvision==0.18.0
+torch
+torchvision
 
 # Media processing
 opencv-python==4.9.0.80
 ffmpeg-python==0.2.0
 librosa==0.10.2
 mtcnn==0.1.1
-mediapipe==0.10.14
+mediapipe
 
 # Explainability / reporting
 reportlab==4.2.0

@@ -54,14 +54,36 @@ ERROR_EMPTY_FILE = "EMPTY_FILE"
 ERROR_UNSUPPORTED_FORMAT = "UNSUPPORTED_FORMAT"
 ERROR_TOO_LARGE = "TOO_LARGE"
 ERROR_UNDECODABLE = "UNDECODABLE"
+ERROR_ENQUEUE_FAILED = "ENQUEUE_FAILED"
+ERROR_BAD_SCHEME = "BAD_SCHEME"
+ERROR_URL_UNREACHABLE = "URL_UNREACHABLE"
+ERROR_URL_DISABLED = "URL_INPUT_DISABLED"
+
 
 
 # Type of the decodability probe: given a path to the stored bytes, return True
 # iff the content decodes as a valid video.
 DecodeProbe = Callable[[str], bool]
+Enqueuer = Callable[[AnalysisSession], bool]
+
+
+def default_enqueuer(session: AnalysisSession) -> bool:
+    """Default task enqueuer using Celery delay."""
+    try:
+        from detection.tasks import analyze_session
+        analyze_session.delay(str(session.id))
+        return True
+    except Exception:
+        # Update session status to FAILED so it never remains in-progress
+        session.status = AnalysisSession.Status.FAILED
+        session.save(update_fields=["status"])
+        return False
+
+
 
 
 def opencv_probe(path: str) -> bool:
+
     """Default decodability probe using OpenCV (FFmpeg-backed).
 
     Returns ``True`` iff the file at ``path`` can be opened as a video and at
@@ -104,8 +126,17 @@ class UploadService:
         stub without real media.
     """
 
-    def __init__(self, probe: Optional[DecodeProbe] = None) -> None:
+    def __init__(
+        self,
+        probe: Optional[DecodeProbe] = None,
+        enqueuer: Optional[Enqueuer] = None,
+    ) -> None:
         self._probe: DecodeProbe = probe or opencv_probe
+        self._enqueuer: Enqueuer = enqueuer or default_enqueuer
+
+    def _enqueue_analysis(self, session: AnalysisSession) -> bool:
+        return self._enqueuer(session)
+
 
     # -- public API --------------------------------------------------------
     def submit_file(self, upload: UploadedFile) -> UploadResult:
@@ -151,8 +182,17 @@ class UploadService:
                     "The file could not be read as a valid video.",
                 )
 
-            # All checks passed: create exactly one session and store the media.
+            # All checks passed: create session, store media, and enqueue task.
             session = self._accept(upload, tmp_path)
+            
+            # Enqueue analysis task (Requirement 6.1, 6.2)
+            enqueue_success = self._enqueue_analysis(session)
+            if not enqueue_success:
+                return self._reject(
+                    ERROR_ENQUEUE_FAILED,
+                    "Failed to enqueue analysis job for processing.",
+                )
+
             return UploadResult(
                 accepted=True,
                 session_id=str(session.id),
@@ -164,16 +204,110 @@ class UploadService:
             # the session media dir).
             tmp_path.unlink(missing_ok=True)
 
-    def submit_url(self, url: str) -> UploadResult:  # pragma: no cover
-        """External URL intake (Requirement 10).
 
-        Extension point only. Gated behind ``EXTERNAL_URL_ENABLED`` and
-        implemented in Task 14 (scheme/reachability/streaming-size-guard). Kept
-        here so callers have a stable surface to wire against.
+    def submit_url(self, url: str, fetcher: Optional[Callable[[str, Path], bool]] = None) -> UploadResult:
+        """External video URL intake (Requirement 10).
+
+        Validates scheme (HTTP/HTTPS), fetches stream with size guard (<= 50MB) and 30s timeout,
+        probes decodability, and creates an AnalysisSession on success.
         """
-        raise NotImplementedError(
-            "URL submission is implemented in Task 14 (EXTERNAL_URL_ENABLED)."
-        )
+        if not getattr(settings, "EXTERNAL_URL_ENABLED", False):
+            return self._reject(
+                ERROR_URL_DISABLED,
+                "External URL input is not enabled.",
+            )
+
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        if parsed.scheme.lower() not in ("http", "https"):
+            return self._reject(
+                ERROR_BAD_SCHEME,
+                "Only HTTP and HTTPS URL schemes are supported.",
+            )
+
+        suffix = Path(parsed.path).suffix or ".mp4"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+
+        try:
+            fetch_func = fetcher or self._default_url_fetcher
+            try:
+                success = fetch_func(url, tmp_path)
+            except ValueError as val_err:
+                if "TOO_LARGE" in str(val_err):
+                    return self._reject(
+                        ERROR_TOO_LARGE,
+                        "The video content at the provided URL exceeds the 50MB size limit.",
+                    )
+                return self._reject(
+                    ERROR_URL_UNREACHABLE,
+                    f"Failed to retrieve video content from URL: {val_err}",
+                )
+            except Exception as exc:  # noqa: BLE001
+                return self._reject(
+                    ERROR_URL_UNREACHABLE,
+                    f"Failed to retrieve video content from URL: {exc}",
+                )
+
+            if not success or not tmp_path.exists() or tmp_path.stat().st_size == 0:
+                return self._reject(
+                    ERROR_URL_UNREACHABLE,
+                    "The URL was unreachable or returned empty content.",
+                )
+
+            if not self._probe(str(tmp_path)):
+                return self._reject(
+                    ERROR_UNDECODABLE,
+                    "The retrieved media file could not be decoded as a valid video.",
+                )
+
+            with transaction.atomic():
+                session = AnalysisSession.objects.create(
+                    source_type=AnalysisSession.SourceType.URL,
+                    source_ref=url,
+                    status=AnalysisSession.Status.QUEUED,
+                    media_state=AnalysisSession.MediaState.PRESENT,
+                )
+                media_dir = session_media_dir(session.id)
+                media_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(tmp_path, media_dir / "url_media.mp4")
+
+            enqueue_success = self._enqueue_analysis(session)
+            if not enqueue_success:
+                return self._reject(
+                    ERROR_ENQUEUE_FAILED,
+                    "Failed to enqueue analysis job for processing.",
+                )
+
+            return UploadResult(
+                accepted=True,
+                session_id=str(session.id),
+                error_code=None,
+                message=None,
+            )
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _default_url_fetcher(url: str, destination: Path) -> bool:
+        """Default HTTP stream fetcher with 30s timeout and 50MB size limit guard."""
+        import urllib.request
+        timeout = getattr(settings, "URL_FETCH_TIMEOUT_SECONDS", 30)
+        max_bytes = getattr(settings, "MAX_UPLOAD_SIZE_BYTES", 52428800)
+
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as response, open(destination, "wb") as out:
+            downloaded = 0
+            while True:
+                chunk = response.read(65536)
+                if not chunk:
+                    break
+                downloaded += len(chunk)
+                if downloaded > max_bytes:
+                    raise ValueError("TOO_LARGE")
+                out.write(chunk)
+        return downloaded > 0
+
 
     # -- validation helpers ------------------------------------------------
     def _is_supported_format(self, filename: Optional[str]) -> bool:

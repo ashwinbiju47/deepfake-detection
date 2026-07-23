@@ -127,8 +127,8 @@ npm run dev
 To fully run the application, you should have the following services active:
 1. **PostgreSQL Service** (Running in background)
 2. **Redis Service** (Running in background)
-3. **Django Server** (`python manage.py runserver`)
-4. **Celery Worker** (`celery -A config worker -l info`)
+3. **Django Server** (`python manage.py runserver`) [ if backend was setup in venv then : `source .venv/bin/activate` then `python manage.py runserver` ]
+4. **Celery Worker** (`celery -A config worker -l info`) [ if backend was setup in venv then : `source .venv/bin/activate` then `celery -A config worker -l info` ]
 5. **Vite Frontend** (`npm run dev`)
 
 Once everything is running, open your browser and navigate to the frontend URL (e.g., `http://localhost:5173`) to use the platform.
