@@ -69,7 +69,7 @@ class FusionEngine:
         * Assign label: "authentic" iff score < threshold, "deepfake" iff score >= threshold (Requirement 4.3).
         """
         has_visual = visual_likelihood is not None
-        has_audio = audio_likelihood is not None
+        has_audio = False # audio_likelihood is not None - Audio disabled for 50% milestone
 
         if not has_visual and not has_audio:
             return FusionOutcome(

@@ -38,6 +38,11 @@ class ReportGenerator:
     @staticmethod
     def generate(session_id: str) -> ReportOutcome:
         """Generate PDF report for session_id (Requirement 12.1, 12.4)."""
+        return ReportOutcome(
+            success=False,
+            error_code="REPORT_DISABLED",
+            message="PDF report disabled for 50% milestone",
+        )
         if not getattr(settings, "REPORT_ENABLED", False):
             return ReportOutcome(
                 success=False,

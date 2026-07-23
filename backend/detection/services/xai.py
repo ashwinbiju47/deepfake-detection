@@ -76,6 +76,10 @@ class XAIGenerator:
         activation_matrix: Optional[List[List[float]]] = None,
     ) -> FrameHeatmapOutcome:
         """Generate, normalize, save, and stream Grad-CAM heatmap for a frame (Requirement 11.1)."""
+        return FrameHeatmapOutcome(
+            success=False,
+            error_detail="HEATMAP disabled for 50% milestone",
+        )
         if not getattr(settings, "HEATMAP_ENABLED", False):
             return FrameHeatmapOutcome(
                 success=False,

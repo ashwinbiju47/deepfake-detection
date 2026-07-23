@@ -71,16 +71,18 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSessionCreated }) => {
         >
           Upload Video File
         </button>
+        {/* URL Upload disabled for 50% milestone
         <button
-          className={`py-2 px-4 font-semibold ${
+          className={\`py-2 px-4 font-semibold \${
             activeTab === "url"
               ? "border-b-2 border-sky-400 text-sky-400"
               : "text-slate-400 hover:text-slate-200"
-          }`}
+          }\`}
           onClick={() => setActiveTab("url")}
         >
           External Video URL
         </button>
+        */}
       </div>
 
       {error && (
@@ -89,7 +91,7 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSessionCreated }) => {
         </div>
       )}
 
-      {activeTab === "file" ? (
+      {activeTab === "file" && (
         <form onSubmit={handleFileSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-slate-300 mb-1">
@@ -110,29 +112,8 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSessionCreated }) => {
             {isSubmitting ? "Uploading..." : "Analyze Video"}
           </button>
         </form>
-      ) : (
-        <form onSubmit={handleUrlSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1">
-              External Video URL (HTTP/HTTPS)
-            </label>
-            <input
-              type="url"
-              placeholder="https://example.com/video.mp4"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white focus:outline-none focus:border-sky-400"
-            />
-          </div>
-          <button
-            type="submit"
-            disabled={isSubmitting || !url.trim()}
-            className="w-full bg-sky-500 hover:bg-sky-600 disabled:opacity-50 text-white font-bold py-3 px-6 rounded-xl transition duration-200"
-          >
-            {isSubmitting ? "Fetching URL..." : "Analyze URL"}
-          </button>
-        </form>
       )}
+      {/* URL processing form disabled for 50% milestone */}
     </div>
   );
 };

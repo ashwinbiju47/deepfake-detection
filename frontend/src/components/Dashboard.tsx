@@ -124,7 +124,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, onReset }) => {
           </div>
 
           <div className="flex items-center justify-between text-xs text-slate-400 border-t border-slate-800 pt-3">
-            <span>Modalities Used: {result.modalities_used?.join(", ") || "None"}</span>
+            <span>Modalities Used: Visual {/* Audio disabled for 50% milestone */}</span>
+            {/* PDF Report disabled for 50% milestone
             <a
               href={reportUrl}
               download
@@ -132,11 +133,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, onReset }) => {
             >
               Download PDF Report
             </a>
+            */}
           </div>
         </div>
       )}
 
-      {/* Heatmaps Overlay Stream */}
+      {/* Heatmaps Overlay Stream disabled for 50% milestone
       {heatmaps.length > 0 && (
         <div className="space-y-3">
           <h4 className="text-sm font-semibold text-slate-300">Grad-CAM XAI Heatmaps</h4>
@@ -156,6 +158,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, onReset }) => {
           </div>
         </div>
       )}
+      */}
     </div>
   );
 };
