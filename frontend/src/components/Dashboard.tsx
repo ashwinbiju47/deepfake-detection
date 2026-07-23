@@ -124,41 +124,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, onReset }) => {
           </div>
 
           <div className="flex items-center justify-between text-xs text-slate-400 border-t border-slate-800 pt-3">
-            <span>Modalities Used: Visual {/* Audio disabled for 50% milestone */}</span>
-            {/* PDF Report disabled for 50% milestone
-            <a
-              href={reportUrl}
-              download
-              className="bg-sky-500 hover:bg-sky-600 text-white px-4 py-2 rounded-xl font-bold transition text-xs"
-            >
-              Download PDF Report
-            </a>
-            */}
+            <span>Modalities Used: Visual</span>
           </div>
         </div>
       )}
-
-      {/* Heatmaps Overlay Stream disabled for 50% milestone
-      {heatmaps.length > 0 && (
-        <div className="space-y-3">
-          <h4 className="text-sm font-semibold text-slate-300">Grad-CAM XAI Heatmaps</h4>
-          <div className="grid grid-cols-2 gap-4">
-            {heatmaps.map((h, idx) => (
-              <div key={idx} className="bg-slate-800 p-2 rounded-xl border border-slate-700 space-y-1">
-                <p className="text-xs font-mono text-slate-400">{h.frame_id}</p>
-                {h.overlay_b64 && (
-                  <img
-                    src={`data:image/png;base64,${h.overlay_b64}`}
-                    alt={`Heatmap ${h.frame_id}`}
-                    className="w-full h-32 object-cover rounded-lg"
-                  />
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-      */}
     </div>
   );
 };

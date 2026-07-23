@@ -43,12 +43,6 @@ class ReportGenerator:
             error_code="REPORT_DISABLED",
             message="PDF report disabled for 50% milestone",
         )
-        if not getattr(settings, "REPORT_ENABLED", False):
-            return ReportOutcome(
-                success=False,
-                error_code="REPORT_DISABLED",
-                message="PDF report generation is not enabled.",
-            )
 
         try:
             session = AnalysisSession.objects.get(id=session_id)

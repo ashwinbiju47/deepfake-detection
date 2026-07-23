@@ -21,12 +21,13 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSessionCreated }) => {
     setError(null);
     setIsSubmitting(true);
     try {
-      const res = await ApiClient.submitFile(file);
+      const api = new ApiClient();
+      const res = await api.submitFile(file);
 
-      if (res.accepted && res.session_id) {
-        onSessionCreated(res.session_id);
+      if (res.accepted && res.sessionId) {
+        onSessionCreated(res.sessionId);
       } else {
-        setError(res.message || res.error_code || "Upload failed.");
+        setError(res.message || res.errorCode || "Upload failed.");
       }
     } catch (err: any) {
       setError(err.message || "Network error submitting video file.");
@@ -71,18 +72,6 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSessionCreated }) => {
         >
           Upload Video File
         </button>
-        {/* URL Upload disabled for 50% milestone
-        <button
-          className={\`py-2 px-4 font-semibold \${
-            activeTab === "url"
-              ? "border-b-2 border-sky-400 text-sky-400"
-              : "text-slate-400 hover:text-slate-200"
-          }\`}
-          onClick={() => setActiveTab("url")}
-        >
-          External Video URL
-        </button>
-        */}
       </div>
 
       {error && (
@@ -113,7 +102,6 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSessionCreated }) => {
           </button>
         </form>
       )}
-      {/* URL processing form disabled for 50% milestone */}
     </div>
   );
 };
