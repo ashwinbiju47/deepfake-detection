@@ -95,3 +95,10 @@ This document contains potential questions and suggested answers for the project
 
 **Q18: What are you going to do for the remaining 50% of the project?**
 **A18:** Now that the complex infrastructure is 100% complete, the next phase will integrate the actual PyTorch Neural Networks for both Visual and Audio deepfake detection. We will also activate the Explainable AI (XAI) Grad-CAM heatmap generation to visually show users why a video was flagged, and enable the PDF summary report generation feature.
+
+**Q19: When you do integrate the real AI models, how will you tackle the high memory usage issue to prevent the system from crashing?**
+**A19:** We have four primary strategies to handle memory efficiently:
+1. **Targeted Sampling & Filtering:** We won't analyze every single frame. We dynamically sample just 1 frame per second. We then use a fast, lightweight filter to discard any frames that don't contain a clear face *before* they ever reach the heavy PyTorch model.
+2. **Micro-Batching:** Instead of loading all frames into the Neural Network at once (which spikes RAM), we will process them in very small micro-batches (e.g., 4 to 8 frames at a time) and aggregate the results.
+3. **Precision Reduction (Quantization):** We will run the PyTorch models using half-precision (FP16) instead of full-precision (FP32), which effectively cuts the model's memory footprint in half with almost zero loss in accuracy.
+4. **Worker Constraints:** We will strict limit the Celery background worker concurrency (e.g., processing only 1 or 2 videos at a time), ensuring the hardware resources are never overwhelmed by multiple concurrent uploads.
