@@ -154,10 +154,16 @@ class FusionResult(models.Model):
 
 
 class FrameHeatmap(models.Model):
-    """Grad-CAM overlay for one analyzed frame (ERD: FRAME_HEATMAP).
+    """Grad-CAM XAI artifacts for one analyzed frame (ERD: FRAME_HEATMAP).
 
-    ``overlay_png`` is a derived visualization (model-activation overlay), not
-    source media — it may persist for reports without violating the GDPR media
+    For every analyzed frame we persist the **full XAI triple**:
+
+    * ``original_png`` — the original frame/face crop (ground truth pixels);
+    * ``heatmap_png`` — the raw Grad-CAM activation heatmap (jet colormap);
+    * ``overlay_png`` — the heatmap alpha-blended over the original frame.
+
+    These are derived visualizations (model-activation overlays), not source
+    media — they may persist for reports without violating the GDPR media
     purge (design Key Model Notes).
     """
 
@@ -168,6 +174,8 @@ class FrameHeatmap(models.Model):
         related_name="frame_heatmaps",
     )
     frame_id = models.CharField(max_length=64)
+    original_png = models.BinaryField(null=True, blank=True)
+    heatmap_png = models.BinaryField(null=True, blank=True)
     overlay_png = models.BinaryField()
     delivered = models.BooleanField(default=False)
 
@@ -253,24 +261,46 @@ class Report(models.Model):
 
 
 class ModelEvaluation(models.Model):
-    """A model-evaluation run against a benchmark dataset (ERD: MODEL_EVALUATION)."""
+    """A model-evaluation run against a benchmark dataset (ERD: MODEL_EVALUATION).
+
+    ``variant`` identifies which pipeline configuration produced the run:
+    ``multimodal`` (fused), ``visual_only``, or ``audio_only``. Recording the
+    variant per run lets the platform demonstrate the modality ordering
+    Multimodal > Visual-only > Audio-only (Requirement 8 / Results chapter).
+
+    ``train_dataset`` records where the model was trained so cross-dataset
+    runs (trained on dataset A, evaluated on dataset B with disjoint
+    identities) are auditable; it defaults to the evaluation dataset for
+    in-domain runs.
+    """
+
+    class Variant(models.TextChoices):
+        MULTIMODAL = "multimodal", "Multimodal"
+        VISUAL_ONLY = "visual_only", "Visual-only"
+        AUDIO_ONLY = "audio_only", "Audio-only"
 
     run_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     dataset = models.CharField(max_length=128, default="FaceForensics++")
+    train_dataset = models.CharField(max_length=128, default="FaceForensics++")
     split = models.CharField(max_length=128, default="held-out test")
+    variant = models.CharField(
+        max_length=16, choices=Variant.choices, default=Variant.MULTIMODAL
+    )
     accuracy = models.FloatField(validators=list(_UNIT_INTERVAL))
     # meets_baseline iff accuracy >= 0.85 (Requirement 8.1).
     meets_baseline = models.BooleanField(default=False)
     evaluated_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self) -> str:  # pragma: no cover - trivial repr
-        return f"ModelEvaluation({self.run_id}, acc={self.accuracy})"
+        return f"ModelEvaluation({self.run_id}, {self.variant}, acc={self.accuracy})"
 
 
 class EvaluationMetrics(models.Model):
     """Detailed metrics for an evaluation run (ERD: EVALUATION_METRICS).
 
     Exactly one metrics object per ``ModelEvaluation`` (1:1 relationship).
+    ``roc_auc`` is nullable: it is only recorded when score-level predictions
+    (not just the confusion matrix) are available.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -283,6 +313,9 @@ class EvaluationMetrics(models.Model):
     precision = models.FloatField(validators=list(_UNIT_INTERVAL))
     recall = models.FloatField(validators=list(_UNIT_INTERVAL))
     f1_score = models.FloatField(validators=list(_UNIT_INTERVAL))
+    roc_auc = models.FloatField(
+        null=True, blank=True, validators=list(_UNIT_INTERVAL)
+    )
 
     def __str__(self) -> str:  # pragma: no cover - trivial repr
         return f"EvaluationMetrics({self.run_id})"

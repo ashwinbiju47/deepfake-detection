@@ -2,18 +2,23 @@
 
 This module implements the design's ``Model_Evaluator`` interface:
 
-    evaluate(dataset, split, tp, fp, tn, fn) -> ModelEvaluation
+    evaluate(dataset, split, tp, fp, tn, fn, ...) -> ModelEvaluation
 
 Design intent (design.md -> Components and Interfaces -> Model_Evaluator):
 * Compute confusion-matrix-derived accuracy, precision, recall, and F1 score (Requirement 8.2).
 * Persist ModelEvaluation and EvaluationMetrics records in the database (Requirement 8.3).
 * Set meets_baseline=True iff accuracy >= 0.85 (Requirement 8.1, 8.4).
+* Record the modality ``variant`` (multimodal / visual_only / audio_only) and
+  ``train_dataset`` per run so the platform can demonstrate the modality
+  ordering Multimodal > Visual-only > Audio-only and cross-dataset
+  generalization (Results / Evaluation chapter).
+* Record ``roc_auc`` when score-level predictions are available (Results table).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Optional
 from django.db import transaction
 
 from detection.models import EvaluationMetrics, ModelEvaluation
@@ -74,8 +79,24 @@ class EvaluationService:
         fp: int,
         tn: int,
         fn: int,
+        roc_auc: Optional[float] = None,
+        variant: str = ModelEvaluation.Variant.MULTIMODAL,
+        train_dataset: Optional[str] = None,
     ) -> ModelEvaluation:
-        """Compute metrics, check 85% baseline threshold, and persist Evaluation records."""
+        """Compute metrics, check 85% baseline threshold, and persist Evaluation records.
+
+        Parameters
+        ----------
+        roc_auc:
+            Area under the ROC curve in [0.0, 1.0] when score-level predictions
+            are available; ``None`` (default) leaves the field unset.
+        variant:
+            Modality configuration that produced this run (multimodal,
+            visual_only, or audio_only).
+        train_dataset:
+            Dataset the model was trained on. Defaults to ``dataset`` for
+            in-domain runs; pass a different value for cross-dataset runs.
+        """
         cm = ConfusionMatrix(tp=tp, fp=fp, tn=tn, fn=fn)
         acc = cm.accuracy
         prec = cm.precision
@@ -87,7 +108,9 @@ class EvaluationService:
         with transaction.atomic():
             eval_run = ModelEvaluation.objects.create(
                 dataset=dataset,
+                train_dataset=train_dataset or dataset,
                 split=split,
+                variant=variant,
                 accuracy=acc,
                 meets_baseline=meets_baseline,
             )
@@ -98,6 +121,7 @@ class EvaluationService:
                 precision=prec,
                 recall=rec,
                 f1_score=f1,
+                roc_auc=roc_auc,
             )
 
 

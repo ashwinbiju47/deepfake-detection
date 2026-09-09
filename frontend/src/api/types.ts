@@ -34,10 +34,10 @@ export type ClassificationLabel = "authentic" | "deepfake";
 /** Result of submitting a file or URL to the Upload_Service (POST /api/analyses). */
 export interface UploadResult {
   accepted: boolean;
-  /** Set iff `accepted` is true. */
-  sessionId: string | null;
-  /** Set iff `accepted` is false. */
-  errorCode: UploadErrorCode | null;
+  /** Set iff `accepted` is true. Wire format: snake_case session_id. */
+  session_id: string | null;
+  /** Set iff `accepted` is false. Wire format: snake_case error_code. */
+  error_code: UploadErrorCode | null;
   message: string | null;
 }
 
@@ -64,11 +64,64 @@ export interface AnalysisSession {
 
 /** Persisted evaluation metrics returned by GET /api/evaluations/{run_id}. */
 export interface EvaluationMetrics {
-  runId: string;
+  run_id: string;
   dataset: string;
+  train_dataset: string;
+  variant: "multimodal" | "visual_only" | "audio_only";
+  split: string;
   accuracy: number;
+  meets_baseline: boolean;
+  evaluated_at: string | null;
+  metrics: {
+    confusion_matrix: { tp: number; fp: number; tn: number; fn: number };
+    precision: number;
+    recall: number;
+    f1_score: number;
+    roc_auc: number | null;
+  } | null;
+}
+
+/** One row of the Results-chapter benchmark tables (snake_case, as served). */
+export interface BenchmarkRow {
+  variant: "multimodal" | "visual_only" | "audio_only";
+  dataset: string;
+  train_dataset: string;
+  split: string;
+  accuracy: number;
+  accuracy_pct: number;
   precision: number;
+  precision_pct: number;
   recall: number;
-  f1Score: number;
-  meetsBaseline: boolean;
+  recall_pct: number;
+  f1_score: number;
+  f1_pct: number;
+  roc_auc: number;
+  roc_auc_pct: number;
+  confusion_matrix: { tp: number; fp: number; tn: number; fn: number };
+  meets_baseline: boolean;
+}
+
+/** Modality comparison table + fusion improvement (GET /api/evaluations/benchmark). */
+export interface ModalityComparison {
+  table: BenchmarkRow[];
+  ordering: Array<"multimodal" | "visual_only" | "audio_only">;
+  ordering_satisfied: boolean;
+  improvement_over_visual: number;
+  improvement_over_audio: number;
+  improvement_over_visual_pct: number;
+  improvement_over_audio_pct: number;
+}
+
+/** One cross-dataset group (train on A, test on B). */
+export interface CrossDatasetGroup {
+  dataset: string;
+  train_dataset: string;
+  split: string;
+  runs: BenchmarkRow[];
+}
+
+/** Full benchmark payload returned by GET /api/evaluations/benchmark. */
+export interface EvaluationBenchmark {
+  modality_comparison: ModalityComparison;
+  cross_dataset: { table: CrossDatasetGroup[] };
 }

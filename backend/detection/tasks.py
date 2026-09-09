@@ -235,6 +235,26 @@ def analyze_session(self: Any, session_id: str) -> str:
         },
     )
 
+    # 4b. Grad-CAM XAI artifacts (Requirement 11)
+    # Generate the ORIGINAL / HEATMAP / OVERLAY triple for representative
+    # frames. Heatmap failure never affects the persisted classification
+    # (Requirement 11.2) — errors are logged and streamed per frame only.
+    try:
+        if getattr(settings, "HEATMAP_ENABLED", False) and outcome.has_visual_signal and outcome.faces:
+            from detection.services.xai import XAIGenerator  # noqa: PLC0415
+
+            visual_model_for_xai = VisualModel()
+            max_frames = getattr(settings, "HEATMAP_MAX_FRAMES", 3)
+            for face in outcome.faces[:max_frames]:
+                XAIGenerator.generate_heatmap(
+                    session_id=str(session.id),
+                    frame_id=f"frame_{face.frame_index:04d}",
+                    activation_matrix=visual_model_for_xai.activation_map(face),
+                    frame_image=face.image,
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("XAI heatmap pass failed for session %s: %s", session_id, exc)
+
     # 5. Media Purge (GDPR Requirement 9)
     try:
         from detection.services.purger import MediaPurger

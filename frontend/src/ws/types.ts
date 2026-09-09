@@ -3,45 +3,60 @@
  * "Components and Interfaces > Result_Streamer" section. All server->client
  * messages carry a monotonically increasing `seq` to support lossless,
  * gap-free replay on reconnect (Requirement 5.5).
+ *
+ * The backend publishes *flat* payload objects: each event's payload dict is
+ * augmented with `seq`, `type` and `session_id` before broadcast (see
+ * StreamService.publish_event), so the client receives one flat object per
+ * event. These types match that wire format exactly.
  */
 import type { ClassificationLabel } from "../api/types";
 
-export interface ProgressEvent {
-  type: "progress";
+/** Shared envelope fields added by the backend to every event payload. */
+interface EventEnvelope {
   seq: number;
+  type: string;
   session_id: string;
-  /** Completion percentage 0..100. */
-  percent: number;
-  stage: string;
-  ts: string;
 }
 
-export interface HeatmapEvent {
-  type: "heatmap";
-  seq: number;
-  session_id: string;
+/** Payload of a `progress` event (no envelope). */
+export interface ProgressPayload {
+  progress_percent: number;
+  status: string;
+}
+
+/** Payload of a `heatmap` event (no envelope) — the full XAI triple. */
+export interface HeatmapPayload {
   frame_id: string;
-  /** Base64 data URL of the Grad-CAM overlay PNG. */
-  image: string;
-  intensity_scale: [number, number];
+  heatmap_id: string;
+  /** Base64 PNG of the ORIGINAL frame. */
+  original_b64?: string;
+  /** Base64 PNG of the raw Grad-CAM heatmap. */
+  heatmap_b64?: string;
+  /** Base64 PNG of the final overlay (heatmap blended over the original). */
+  overlay_b64?: string;
 }
 
-export interface ResultEvent {
-  type: "result";
-  seq: number;
-  session_id: string;
-  /** Classification_Score in [0,1]; null when inconclusive. */
+/** Payload of a `result` event (no envelope). */
+export interface ResultPayload {
   score: number | null;
   label: ClassificationLabel | null;
   modalities_used: Array<"visual" | "audio">;
+  inconclusive: boolean;
+  status: string;
 }
 
-export interface ErrorEvent {
+export interface ProgressEvent extends EventEnvelope, ProgressPayload {}
+
+export interface HeatmapEvent extends EventEnvelope, HeatmapPayload {}
+
+export interface ResultEvent extends EventEnvelope, ResultPayload {}
+
+export interface ErrorEvent extends EventEnvelope {
   type: "error";
-  seq: number;
-  session_id: string;
-  code: string;
+  error_code?: string;
+  code?: string;
   message: string;
+  frame_id?: string;
 }
 
 /** Discriminated union of all server -> client stream events. */

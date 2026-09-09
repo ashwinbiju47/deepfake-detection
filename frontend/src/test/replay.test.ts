@@ -6,9 +6,10 @@
 
 import { describe, expect, it } from "vitest";
 import fc from "fast-check";
-import type { StreamEvent } from "../ws/types";
 
-function replayEvents(events: StreamEvent[], lastSeq: number): StreamEvent[] {
+type ReplayableEvent = { seq: number; type: string; payload: unknown };
+
+function replayEvents(events: ReplayableEvent[], lastSeq: number): ReplayableEvent[] {
   return events.filter((e) => e.seq > lastSeq).sort((a, b) => a.seq - b.seq);
 }
 
@@ -31,7 +32,7 @@ describe("Property 10: Lossless gap-free stream replay", () => {
             new Map(events.map((e) => [e.seq, e])).values()
           );
 
-          const replayed = replayEvents(uniqueEvents, lastSeq);
+          const replayed = replayEvents(uniqueEvents as ReplayableEvent[], lastSeq);
 
           // Every replayed event must have seq > lastSeq
           for (const e of replayed) {

@@ -1,19 +1,18 @@
 /**
- * Typed API client stub for the DRF backend.
+ * Typed API client for the DRF backend.
  *
- * This module defines the surface the Dashboard uses to talk to the
- * Upload_Service and session/evaluation endpoints described in the design:
+ * Endpoints (design: Components and Interfaces):
  *
  *   POST /api/analyses                -> submit a file (multipart) or URL (json)
  *   GET  /api/analyses/{id}           -> fetch session status/result metadata
  *   GET  /api/analyses/{id}/report    -> download PDF (WHERE REPORT_ENABLED)
  *   GET  /api/evaluations/{run_id}    -> retrieve persisted evaluation metrics
- *
- * The HTTP wiring is implemented here as a thin fetch wrapper; the full
- * Dashboard behaviour (forms, polling, rendering) is built in a later task.
+ *   GET  /api/evaluations/benchmark   -> Results-chapter benchmark tables
+ *                                       (modality comparison + cross-dataset)
  */
 import type {
   AnalysisSession,
+  EvaluationBenchmark,
   EvaluationMetrics,
   UploadResult,
 } from "./types";
@@ -44,7 +43,20 @@ export class ApiClient {
    * Submit a video file for analysis (multipart). Returns 202 {session_id} on
    * acceptance or a typed error on rejection.
    */
-  async submitFile(file: File): Promise<UploadResult> {
+  static async submitFile(file: File, baseUrl = "/api"): Promise<UploadResult> {
+    return new ApiClient({ baseUrl }).submitFileInstance(file);
+  }
+
+  /**
+   * Submit an external video URL for analysis (json). Gated server-side by
+   * EXTERNAL_URL_ENABLED.
+   */
+  static async submitUrl(url: string, baseUrl = "/api"): Promise<UploadResult> {
+    return new ApiClient({ baseUrl }).submitUrlInstance(url);
+  }
+
+  /** Instance-based submission (used by the static helpers). */
+  async submitFileInstance(file: File): Promise<UploadResult> {
     const body = new FormData();
     body.append("file", file);
     const res = await this.fetchImpl(`${this.baseUrl}/analyses`, {
@@ -54,11 +66,7 @@ export class ApiClient {
     return this.toUploadResult(res);
   }
 
-  /**
-   * Submit an external video URL for analysis (json). Gated server-side by
-   * EXTERNAL_URL_ENABLED.
-   */
-  async submitUrl(url: string): Promise<UploadResult> {
+  async submitUrlInstance(url: string): Promise<UploadResult> {
     const res = await this.fetchImpl(`${this.baseUrl}/analyses`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -70,7 +78,7 @@ export class ApiClient {
   /** Fetch status/result metadata for a session. */
   async getSession(sessionId: string): Promise<AnalysisSession> {
     const res = await this.fetchImpl(
-      `${this.baseUrl}/analyses/${encodeURIComponent(sessionId)}`,
+      `${this.baseUrl}/analyses/${encodeURIComponent(sessionId)}`
     );
     if (!res.ok) {
       throw new Error(`getSession failed: ${res.status}`);
@@ -81,7 +89,7 @@ export class ApiClient {
   /** Download the PDF report for a completed session (WHERE REPORT_ENABLED). */
   async getReport(sessionId: string): Promise<Blob> {
     const res = await this.fetchImpl(
-      `${this.baseUrl}/analyses/${encodeURIComponent(sessionId)}/report`,
+      `${this.baseUrl}/analyses/${encodeURIComponent(sessionId)}/report`
     );
     if (!res.ok) {
       throw new Error(`getReport failed: ${res.status}`);
@@ -92,12 +100,24 @@ export class ApiClient {
   /** Retrieve persisted model evaluation metrics for a run. */
   async getEvaluation(runId: string): Promise<EvaluationMetrics> {
     const res = await this.fetchImpl(
-      `${this.baseUrl}/evaluations/${encodeURIComponent(runId)}`,
+      `${this.baseUrl}/evaluations/${encodeURIComponent(runId)}`
     );
     if (!res.ok) {
       throw new Error(`getEvaluation failed: ${res.status}`);
     }
     return (await res.json()) as EvaluationMetrics;
+  }
+
+  /**
+   * Fetch the Results-chapter benchmark tables: modality comparison
+   * (Multimodal > Visual-only > Audio-only) and cross-dataset generalization.
+   */
+  async getBenchmark(): Promise<EvaluationBenchmark> {
+    const res = await this.fetchImpl(`${this.baseUrl}/evaluations/benchmark`);
+    if (!res.ok) {
+      throw new Error(`getBenchmark failed: ${res.status}`);
+    }
+    return (await res.json()) as EvaluationBenchmark;
   }
 
   /** Normalize an upload response (202 accepted or 4xx/5xx rejection) into UploadResult. */
@@ -106,15 +126,15 @@ export class ApiClient {
     if (res.ok) {
       return {
         accepted: true,
-        sessionId: (data.session_id as string) ?? null,
-        errorCode: null,
+        session_id: (data.session_id as string) ?? null,
+        error_code: null,
         message: null,
       };
     }
     return {
       accepted: false,
-      sessionId: null,
-      errorCode: (data.error_code as UploadResult["errorCode"]) ?? null,
+      session_id: null,
+      error_code: (data.error_code as UploadResult["error_code"]) ?? null,
       message: (data.message as string) ?? null,
     };
   }
