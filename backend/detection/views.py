@@ -20,6 +20,7 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.request import Request
 from rest_framework.response import Response
 
+from detection.services.benchmark import cross_dataset_table, modality_comparison_table
 from detection.services.upload import (
     ERROR_EMPTY_FILE,
     ERROR_TOO_LARGE,
@@ -127,15 +128,20 @@ def get_evaluation(_request: Request, run_id: str) -> Response:
             {
                 "run_id": str(eval_run.run_id),
                 "dataset": eval_run.dataset,
+                "train_dataset": eval_run.train_dataset,
+                "variant": eval_run.variant,
                 "split": eval_run.split,
                 "accuracy": eval_run.accuracy,
                 "meets_baseline": eval_run.meets_baseline,
-                "timestamp": eval_run.timestamp.isoformat() if eval_run.timestamp else None,
+                "evaluated_at": (
+                    eval_run.evaluated_at.isoformat() if eval_run.evaluated_at else None
+                ),
                 "metrics": {
                     "confusion_matrix": metrics.confusion_matrix if metrics else {},
                     "precision": metrics.precision if metrics else 0.0,
                     "recall": metrics.recall if metrics else 0.0,
                     "f1_score": metrics.f1_score if metrics else 0.0,
+                    "roc_auc": metrics.roc_auc if metrics else None,
                 }
                 if metrics
                 else None,
@@ -146,6 +152,23 @@ def get_evaluation(_request: Request, run_id: str) -> Response:
             {"error_code": "NOT_FOUND", "message": "Evaluation run not found."},
             status=status.HTTP_404_NOT_FOUND,
         )
+
+
+@api_view(["GET"])
+def get_benchmark(_request: Request) -> Response:
+    """Return the Results-chapter benchmark tables (``GET /api/evaluations/benchmark``).
+
+    Serves the modality-comparison table (Multimodal > Visual-only >
+    Audio-only, with per-model Accuracy / Precision / Recall / F1 / ROC-AUC)
+    and the cross-dataset generalization table (train on one dataset, test on
+    another with unseen identities).
+    """
+    return Response(
+        {
+            "modality_comparison": modality_comparison_table(),
+            "cross_dataset": cross_dataset_table(),
+        }
+    )
 
 
 @api_view(["GET"])

@@ -82,6 +82,28 @@ class VisualModel:
 
         return clamp_likelihood(mean_val)
 
+    def activation_map(self, face: FaceRegion, size: int = 8) -> List[List[float]]:
+        """Return a Grad-CAM-style activation matrix for one face.
+
+        In a deployed system this is the gradient-weighted activation map from
+        the CNN's final convolutional layer. Here it is a deterministic
+        stand-in: a centered blob whose peak scales with the face's inferred
+        likelihood, so the ORIGINAL / HEATMAP / OVERLAY XAI triple is always
+        renderable (Requirement 11).
+        """
+        import math  # noqa: PLC0415
+
+        likelihood = self.infer_face(face)
+        center = (size - 1) / 2.0
+        matrix: List[List[float]] = []
+        for y in range(size):
+            row: List[float] = []
+            for x in range(size):
+                dist = math.hypot(x - center, y - center) / max(center, 1.0)
+                row.append(clamp_likelihood(likelihood * math.exp(-(dist**2) / 2.0)))
+            matrix.append(row)
+        return matrix
+
     def _default_infer_backend(self, face: FaceRegion) -> float:
         """Default PyTorch/stub inference backend (lazy import)."""
         # Fallback to pseudo-deterministic computation based on face properties if PyTorch not loaded

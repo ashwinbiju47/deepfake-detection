@@ -6,6 +6,10 @@ This module implements the design's ``XAI_Generator`` interface:
 
 Design intent (design.md -> Components and Interfaces -> XAI_Generator):
 * Generate Grad-CAM activation heatmaps overlaying original frames, normalized to [0.0, 1.0] (Requirement 11.1, Property 20).
+* For every analyzed frame produce the **full XAI triple**: the ORIGINAL
+  frame, the raw Grad-CAM heatmap, and the final OVERLAY (heatmap
+  alpha-blended over the original), so the explainability view never shows a
+  heatmap in isolation.
 * Persist FrameHeatmap records as non-source-media visual artifacts.
 * On generation failure, retain classification, omit heatmap, emit error for that frame (Requirement 11.2).
 * Stream heatmaps over WebSockets to connected client (Requirement 11.3, 11.4).
@@ -20,6 +24,7 @@ from typing import Any, List, Optional
 from django.conf import settings
 
 from detection.models import AnalysisSession, FrameHeatmap
+from detection.services.imaging import render_artifacts
 from detection.services.streamer import StreamService
 
 logger = logging.getLogger(__name__)
@@ -64,6 +69,10 @@ class FrameHeatmapOutcome:
     frame_id: Optional[str] = None
     normalized_matrix: Optional[List[List[float]]] = None
     error_detail: str = ""
+    # Base64-encoded XAI triple (original / heatmap / overlay PNGs).
+    original_b64: Optional[str] = None
+    heatmap_b64: Optional[str] = None
+    overlay_b64: Optional[str] = None
 
 
 class XAIGenerator:
@@ -74,8 +83,20 @@ class XAIGenerator:
         session_id: str,
         frame_id: str,
         activation_matrix: Optional[List[List[float]]] = None,
+        frame_image: Any = None,
     ) -> FrameHeatmapOutcome:
-        """Generate, normalize, save, and stream Grad-CAM heatmap for a frame (Requirement 11.1)."""
+        """Generate, normalize, save, and stream the XAI triple for a frame (Requirement 11.1).
+
+        Parameters
+        ----------
+        activation_matrix:
+            Raw model-activation values (Grad-CAM output) for the frame.
+            Normalized to [0.0, 1.0] before rendering (Property 20).
+        frame_image:
+            Original frame pixels (numpy BGR array or nested lists). When
+            unavailable, a deterministic placeholder original is rendered so
+            the ORIGINAL / HEATMAP / OVERLAY triple is always complete.
+        """
         if not getattr(settings, "HEATMAP_ENABLED", False):
             return FrameHeatmapOutcome(
                 success=False,
@@ -94,26 +115,33 @@ class XAIGenerator:
             raw_matrix = activation_matrix or [[0.1, 0.8], [0.3, 0.9]]
             norm_matrix = normalize_heatmap(raw_matrix)
 
-            # Generate dummy 1x1 PNG bytes for derived visualization record
-            png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\rIDATx\x9cc\xf8\xff\xff?\x03\x00\x05\x00\x01\x0d\x0a-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+            original_png, heatmap_png, overlay_png = render_artifacts(
+                norm_matrix, frame_image=frame_image
+            )
 
             record = FrameHeatmap.objects.create(
                 session=session,
                 frame_id=frame_id,
-                overlay_png=png_bytes,
+                original_png=original_png,
+                heatmap_png=heatmap_png,
+                overlay_png=overlay_png,
                 delivered=True,
             )
 
-            b64_png = base64.b64encode(png_bytes).decode("ascii")
+            original_b64 = base64.b64encode(original_png).decode("ascii")
+            heatmap_b64 = base64.b64encode(heatmap_png).decode("ascii")
+            overlay_b64 = base64.b64encode(overlay_png).decode("ascii")
 
-            # Stream heatmap payload over WebSockets (Requirement 11.3)
+            # Stream the full triple over WebSockets (Requirement 11.3)
             StreamService.publish_event(
                 session_id=session_id,
                 event_type="heatmap",
                 payload={
                     "frame_id": frame_id,
                     "heatmap_id": str(record.id),
-                    "overlay_b64": b64_png,
+                    "original_b64": original_b64,
+                    "heatmap_b64": heatmap_b64,
+                    "overlay_b64": overlay_b64,
                 },
             )
 
@@ -123,6 +151,9 @@ class XAIGenerator:
                 frame_id=frame_id,
                 normalized_matrix=norm_matrix,
                 error_detail="",
+                original_b64=original_b64,
+                heatmap_b64=heatmap_b64,
+                overlay_b64=overlay_b64,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(

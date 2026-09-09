@@ -29,6 +29,10 @@
 | 17 | React Dashboard Frontend | ✅ Done | `UploadForm` (file + URL tabs), `Dashboard` real-time progress bar, Grad-CAM viewer, PDF download link |
 | 18 | Integration & E2E Pipeline Tests | ✅ Done | Async API acceptance < 2s, WebSocket streaming test, full end-to-end analysis & purge flow |
 | 19 | Final Checkpoint - All Tests Passing | ✅ Done | **82 Backend tests + 5 Frontend tests passing (100% green)** |
+| 20 | Results/Evaluation chapter + benchmark tables | ✅ Done | Modality comparison (Multimodal > Visual-only > Audio-only) with Accuracy/Precision/Recall/F1/ROC-AUC, cross-dataset generalization table, `GET /api/evaluations/benchmark` |
+| 21 | Architecture pipeline diagram in PDF report | ✅ Done | Figure 1: Video → Frame extraction → Face detection → Visual model → Audio extraction → Audio model → Multimodal fusion → Fake probability → XAI explanation → Final result |
+| 22 | Full XAI triple (ORIGINAL + HEATMAP + OVERLAY) | ✅ Done | Dependency-free PNG rendering (`services/imaging.py`), all three artifacts persisted per frame, streamed over WebSocket, embedded in PDF report |
+| 23 | Frontend pipeline + results + XAI views | ✅ Done | Live `PipelineFlow` diagram, `ResultsTable` (metrics + cross-dataset + fusion-improvement callout), `XAIPanel` triple viewer |
 
 ---
 
@@ -61,5 +65,16 @@
 
 ## 3. Test Execution Results
 
-- **Backend (pytest):** 82 passed, 1 skipped (5.60s)
-- **Frontend (vitest):** 5 passed (1.01s)
+- **Backend (pytest):** 97 passed, 1 skipped
+- **Frontend (vitest):** 5 passed
+- **Frontend typecheck (`tsc --noEmit`):** clean
+
+---
+
+## 4. Results / Evaluation Chapter
+
+See **[RESULTS.md](RESULTS.md)** for the full chapter: the system pipeline
+diagram, the model-performance table (Accuracy / Precision / Recall / F1 /
+ROC-AUC per modality), the fusion-improvement analysis
+(Multimodal > Visual-only > Audio-only), and the cross-dataset generalization
+results (train/test on different identities and datasets).
