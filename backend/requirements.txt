@@ -8,6 +8,9 @@ channels==4.1.0
 channels-redis==4.2.0
 daphne==4.1.2
 
+# Static / single-origin SPA serving (used in the deployed container)
+whitenoise==6.7.0
+
 # Async task queue + broker
 celery==5.4.0
 redis==5.0.4

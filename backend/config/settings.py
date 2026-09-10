@@ -91,17 +91,31 @@ ASGI_APPLICATION = "config.asgi.application"
 # ---------------------------------------------------------------------------
 # Database (PostgreSQL via the Django ORM)
 # ---------------------------------------------------------------------------
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": env_str("POSTGRES_DB", "deepfake"),
-        "USER": env_str("POSTGRES_USER", "deepfake"),
-        "PASSWORD": env_str("POSTGRES_PASSWORD", "deepfake"),
-        "HOST": env_str("POSTGRES_HOST", "localhost"),
-        "PORT": env_str("POSTGRES_PORT", "5432"),
-        "CONN_MAX_AGE": env_int_clamped("POSTGRES_CONN_MAX_AGE", 60, 0, 3600),
+# ``DJANGO_DB_ENGINE`` selects the backend: "postgres" (default, dev / full
+# stack) or "sqlite" (single-container deployments such as Hugging Face
+# Spaces, where a lightweight embedded database avoids an external service).
+# The benchmark / evaluation data is reference material computed in code, and
+# transient media is purged after analysis, so SQLite is a faithful choice for
+# the hosted demo.
+if env_str("DJANGO_DB_ENGINE", "postgres") == "sqlite":
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": env_str("POSTGRES_DB", "deepfake"),
+            "USER": env_str("POSTGRES_USER", "deepfake"),
+            "PASSWORD": env_str("POSTGRES_PASSWORD", "deepfake"),
+            "HOST": env_str("POSTGRES_HOST", "localhost"),
+            "PORT": env_str("POSTGRES_PORT", "5432"),
+            "CONN_MAX_AGE": env_int_clamped("POSTGRES_CONN_MAX_AGE", 60, 0, 3600),
+        }
+    }
 
 # ---------------------------------------------------------------------------
 # Password validation
@@ -126,6 +140,27 @@ USE_TZ = True
 # ---------------------------------------------------------------------------
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+
+# ---------------------------------------------------------------------------
+# Single-origin SPA serving (deployed container).
+#
+# In the hosted container the built React app (frontend/dist) is served from
+# the same origin as the API and WebSocket endpoints, so the frontend can talk
+# to "/api" and "/ws" with no CORS or separate static host. When
+# ``DJANGO_SERVE_SPA`` is on, WhiteNoise serves ``frontend/dist`` at the root
+# (index.html at "/", hashed assets under "/assets/") while "/api" and "/ws"
+# continue to be handled by Django / Channels. Dev mode (Vite dev server) is
+# unaffected.
+SERVE_SPA = env_bool("DJANGO_SERVE_SPA", False)
+if SERVE_SPA:
+    MIDDLEWARE.insert(
+        MIDDLEWARE.index("django.middleware.security.SecurityMiddleware") + 1,
+        "whitenoise.middleware.WhiteNoiseMiddleware",
+    )
+    # WhiteNoise root = frontend/dist. ``BASE_DIR`` is backend/; the built app
+    # lives one level up under frontend/dist in both the repo and the image.
+    WHITENOISE_ROOT = Path(env_str("DJANGO_SPA_ROOT", str(BASE_DIR.parent / "frontend" / "dist")))
+    WHITENOISE_INDEX_FILE = True
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
