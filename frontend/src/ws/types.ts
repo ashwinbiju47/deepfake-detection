@@ -43,6 +43,12 @@ export interface ResultPayload {
   modalities_used: Array<"visual" | "audio">;
   inconclusive: boolean;
   status: string;
+  /** Per-modality evidence behind the fused score (null when absent). */
+  visual_likelihood?: number | null;
+  audio_likelihood?: number | null;
+  /** Fusion weights actually applied to the two modalities. */
+  weights?: { visual: number; audio: number };
+  threshold?: number;
 }
 
 export interface ProgressEvent extends EventEnvelope, ProgressPayload {}

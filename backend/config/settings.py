@@ -235,9 +235,19 @@ MEDIA_URL = "media/"
 # ---------------------------------------------------------------------------
 # Should-Have: external URL input (Req 10) and Grad-CAM heatmaps (Req 11).
 # Could-Have: downloadable PDF report (Req 12).
+#
+# Heatmaps and the PDF report ship enabled by default: they are part of the
+# delivered explainability/results experience (the dashboard shows the
+# ORIGINAL + HEATMAP + OVERLAY triple and offers a PDF download), so an
+# out-of-the-box run must not answer REPORT_DISABLED. Set the env var to
+# ``false`` to turn either feature off explicitly.
 EXTERNAL_URL_ENABLED = env_bool("EXTERNAL_URL_ENABLED", False)
-HEATMAP_ENABLED = env_bool("HEATMAP_ENABLED", False)
-REPORT_ENABLED = env_bool("REPORT_ENABLED", False)
+HEATMAP_ENABLED = env_bool("HEATMAP_ENABLED", True)
+REPORT_ENABLED = env_bool("REPORT_ENABLED", True)
+
+# Maximum number of representative frames for which the XAI triple is
+# generated/streamed per session (bounded work for long videos).
+HEATMAP_MAX_FRAMES = env_int_clamped("HEATMAP_MAX_FRAMES", 3, 1, 20)
 
 # ---------------------------------------------------------------------------
 # Domain configuration: upload limits, decision threshold, fusion weights
@@ -249,6 +259,13 @@ SUPPORTED_VIDEO_FORMATS = env_list("SUPPORTED_VIDEO_FORMATS", "mp4,avi")
 MAX_UPLOAD_SIZE_BYTES = env_int_clamped(
     "MAX_UPLOAD_SIZE_BYTES", 52_428_800, 1, 52_428_800
 )
+
+# Frame sampling for the visual pipeline: at least FRAME_MIN_FPS frames per
+# second of video (Requirement 2.1) are sampled, capped at
+# FRAME_SAMPLE_MAX_FRAMES so a long video cannot pin a worker (the frames are
+# decoded lazily, never all at once).
+FRAME_MIN_FPS = env_float_clamped("FRAME_MIN_FPS", 1.0, 0.1, 30.0)
+FRAME_SAMPLE_MAX_FRAMES = env_int_clamped("FRAME_SAMPLE_MAX_FRAMES", 300, 1, 100_000)
 
 # Decision threshold in [0.0, 1.0] (Requirement 4.3): score >= threshold ->
 # "deepfake", else "authentic".

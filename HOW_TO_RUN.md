@@ -71,8 +71,8 @@ The `.env` holds the database URL, Redis URL, and feature flags. Relevant flags:
 
 | Flag | Meaning | Project default |
 |---|---|---|
-| `HEATMAP_ENABLED` | Whether Grad-CAM-style XAI overlays are generated/streamed | false (exercised in tests) |
-| `REPORT_ENABLED` | Whether the PDF report endpoint is reachable | false (exercised in tests) |
+| `HEATMAP_ENABLED` | Whether Grad-CAM-style XAI overlays are generated/streamed | true |
+| `REPORT_ENABLED` | Whether the PDF report endpoint is reachable | true |
 | `EXTERNAL_URL_ENABLED` | Whether external-video-URL submissions are accepted | false (exercised in tests) |
 
 ### Database: migrate
@@ -200,10 +200,22 @@ When the analysis finishes, the dashboard shows:
   **Grad-CAM heatmap** (jet colormap), and the **final overlay** (original + heatmap
   blended at 0.5 alpha) — side by side with captions.
 
-- A **Download PDF report** button when `REPORT_ENABLED` is on, generating a 3-page
-  report: page 1 = architecture/pipeline diagram (Figure 1), page 2 = the Results /
-  Evaluation chapter (metrics table + fusion + cross-dataset), page 3 = XAI panels with
-  the embedded triple images.
+- An **Evaluation figures** section (from `/api/evaluations/benchmark`) rendering the
+  three **confusion matrices** (multimodal / visual-only / audio-only with FP and FN
+  explained), one **ROC curve** with all three models, the **Precision-Recall curves**
+  for all three models, and the **fusion-weight ablation** study across
+  visual/audio weights (the chosen 0.6/0.4 operating point is highlighted).
+
+- A **Download PDF report** button when `REPORT_ENABLED` is on, generating a 6-page
+  report: page 1 = architecture/pipeline diagram (Figure 1), pages 2-3 = the Results /
+  Evaluation chapter (metrics table + fusion improvement + cross-dataset), page 4 =
+  confusion matrices, page 5 = ROC and Precision-Recall curves (all three models),
+  page 6 = fusion-weight ablation table + chart, and an XAI page with the embedded
+  Original / Heatmap / Overlay triple images.
+
+Analyses are **deterministic**: uploading the same video twice yields byte-identical
+scores (the baseline models derive scores from content features, not RNG), so the
+"same file gives different percentages" issue is fixed by construction.
 
 ### API worth knowing
 
@@ -213,7 +225,7 @@ When the analysis finishes, the dashboard shows:
 | `/api/analyses/{id}` | GET | Session status + result metadata |
 | `/api/analyses/{id}/report` | GET | PDF report (only when `REPORT_ENABLED`) |
 | `/api/evaluations/{run_id}` | GET | Persisted evaluation metrics for a run |
-| `/api/evaluations/benchmark` | GET | The Results-chapter data: modality comparison table + cross-dataset table (JSON) |
+| `/api/evaluations/benchmark` | GET | The Results-chapter data: modality comparison table + cross-dataset table + ROC/PR curves + confusion matrices + fusion-weight ablation + rendered figure PNGs (JSON) |
 
 The benchmark endpoint is wired to the same structured data the PDF and dashboard render
 from, so a single source backs all three.
@@ -258,9 +270,9 @@ DJANGO_SETTINGS_MODULE=config.settings .venv/bin/python manage.py migrate
 - **Celery not picking up tasks.** Confirm Redis is up and reachable from the worker's
   `.env` `REDIS_URL`, and that the worker's working directory is `backend/` so `-A config`
   resolves.
-- **No heatmap / no PDF in the UI.** Those features are gated by feature flags in
-  `.env` (`HEATMAP_ENABLED` / `REPORT_ENABLED`). They are exercised in tests; turn the
-  flags on to see them in the live app.
+- **No heatmap / no PDF in the UI.** Both default **on** now (`HEATMAP_ENABLED` /
+  `REPORT_ENABLED` in `.env`); if a checkout sets them to false the PDF button shows
+  a clear "report disabled" notice instead of throwing.
 - **External URL submit fails.** Gate is `EXTERNAL_URL_ENABLED` in `.env`.
 
 ---
@@ -272,7 +284,10 @@ DJANGO_SETTINGS_MODULE=config.settings .venv/bin/python manage.py migrate
 | Pipeline visualization (live, in dashboard) | `frontend/src/components/PipelineFlow.tsx` |
 | Results table (modality comparison) | `frontend/src/components/ResultsTable.tsx` |
 | XAI triple panel (Original / Heatmap / Overlay) | `frontend/src/components/XAIPanel.tsx` |
-| Benchmark service (table + cross-dataset) | `backend/detection/services/benchmark.py` |
+| Benchmark service (table + cross-dataset + ROC/PR curves + confusion matrices) | `backend/detection/services/benchmark.py` |
+| Evaluation figures renderer (confusion / ROC / PR / ablation PNGs) | `backend/detection/services/figures.py` |
+| Fusion-weight ablation study (0.6/0.4 sweep) | `backend/detection/services/ablation.py` |
+| Evaluation figures section (dashboard) | `frontend/src/components/EvaluationFigures.tsx` |
 | Imaging helper (dependency-free PNG for the triple) | `backend/detection/services/imaging.py` |
 | PDF report (Figure 1 + Results chapter + XAI page) | `backend/detection/services/report.py` |
 | Benchmark API endpoint | `backend/detection/views.py` + `backend/detection/urls.py` |
