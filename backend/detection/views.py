@@ -20,7 +20,13 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.request import Request
 from rest_framework.response import Response
 
-from detection.services.benchmark import cross_dataset_table, modality_comparison_table
+from detection.services.ablation import ablation_table
+from detection.services.benchmark import (
+    cross_dataset_table,
+    curves_payload,
+    modality_comparison_table,
+)
+from detection.services.figures import figures_payload
 from detection.services.upload import (
     ERROR_EMPTY_FILE,
     ERROR_TOO_LARGE,
@@ -159,16 +165,22 @@ def get_benchmark(_request: Request) -> Response:
     """Return the Results-chapter benchmark tables (``GET /api/evaluations/benchmark``).
 
     Serves the modality-comparison table (Multimodal > Visual-only >
-    Audio-only, with per-model Accuracy / Precision / Recall / F1 / ROC-AUC)
-    and the cross-dataset generalization table (train on one dataset, test on
-    another with unseen identities).
+    Audio-only, with per-model Accuracy / Precision / Recall / F1 / ROC-AUC),
+    the cross-dataset generalization table (train on one dataset, test on
+    another with unseen identities), the evaluation figures (confusion
+    matrices, ROC, precision-recall, fusion-weight ablation) and the ROC/PR
+    curve data behind them.
     """
-    return Response(
-        {
-            "modality_comparison": modality_comparison_table(),
-            "cross_dataset": cross_dataset_table(),
-        }
-    )
+    payload = {
+        "modality_comparison": modality_comparison_table(),
+        "cross_dataset": cross_dataset_table(),
+        "curves": curves_payload(),
+        "weight_ablation": ablation_table(
+            configured_alpha=settings.FUSION_WEIGHT_VISUAL
+        ),
+        "figures": figures_payload(),
+    }
+    return Response(payload)
 
 
 @api_view(["GET"])

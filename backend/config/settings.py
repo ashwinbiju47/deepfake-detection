@@ -91,17 +91,31 @@ ASGI_APPLICATION = "config.asgi.application"
 # ---------------------------------------------------------------------------
 # Database (PostgreSQL via the Django ORM)
 # ---------------------------------------------------------------------------
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": env_str("POSTGRES_DB", "deepfake"),
-        "USER": env_str("POSTGRES_USER", "deepfake"),
-        "PASSWORD": env_str("POSTGRES_PASSWORD", "deepfake"),
-        "HOST": env_str("POSTGRES_HOST", "localhost"),
-        "PORT": env_str("POSTGRES_PORT", "5432"),
-        "CONN_MAX_AGE": env_int_clamped("POSTGRES_CONN_MAX_AGE", 60, 0, 3600),
+# ``DJANGO_DB_ENGINE`` selects the backend: "postgres" (default, dev / full
+# stack) or "sqlite" (single-container deployments such as Hugging Face
+# Spaces, where a lightweight embedded database avoids an external service).
+# The benchmark / evaluation data is reference material computed in code, and
+# transient media is purged after analysis, so SQLite is a faithful choice for
+# the hosted demo.
+if env_str("DJANGO_DB_ENGINE", "postgres") == "sqlite":
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": env_str("POSTGRES_DB", "deepfake"),
+            "USER": env_str("POSTGRES_USER", "deepfake"),
+            "PASSWORD": env_str("POSTGRES_PASSWORD", "deepfake"),
+            "HOST": env_str("POSTGRES_HOST", "localhost"),
+            "PORT": env_str("POSTGRES_PORT", "5432"),
+            "CONN_MAX_AGE": env_int_clamped("POSTGRES_CONN_MAX_AGE", 60, 0, 3600),
+        }
+    }
 
 # ---------------------------------------------------------------------------
 # Password validation
@@ -126,6 +140,27 @@ USE_TZ = True
 # ---------------------------------------------------------------------------
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+
+# ---------------------------------------------------------------------------
+# Single-origin SPA serving (deployed container).
+#
+# In the hosted container the built React app (frontend/dist) is served from
+# the same origin as the API and WebSocket endpoints, so the frontend can talk
+# to "/api" and "/ws" with no CORS or separate static host. When
+# ``DJANGO_SERVE_SPA`` is on, WhiteNoise serves ``frontend/dist`` at the root
+# (index.html at "/", hashed assets under "/assets/") while "/api" and "/ws"
+# continue to be handled by Django / Channels. Dev mode (Vite dev server) is
+# unaffected.
+SERVE_SPA = env_bool("DJANGO_SERVE_SPA", False)
+if SERVE_SPA:
+    MIDDLEWARE.insert(
+        MIDDLEWARE.index("django.middleware.security.SecurityMiddleware") + 1,
+        "whitenoise.middleware.WhiteNoiseMiddleware",
+    )
+    # WhiteNoise root = frontend/dist. ``BASE_DIR`` is backend/; the built app
+    # lives one level up under frontend/dist in both the repo and the image.
+    WHITENOISE_ROOT = Path(env_str("DJANGO_SPA_ROOT", str(BASE_DIR.parent / "frontend" / "dist")))
+    WHITENOISE_INDEX_FILE = True
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -200,9 +235,19 @@ MEDIA_URL = "media/"
 # ---------------------------------------------------------------------------
 # Should-Have: external URL input (Req 10) and Grad-CAM heatmaps (Req 11).
 # Could-Have: downloadable PDF report (Req 12).
+#
+# Heatmaps and the PDF report ship enabled by default: they are part of the
+# delivered explainability/results experience (the dashboard shows the
+# ORIGINAL + HEATMAP + OVERLAY triple and offers a PDF download), so an
+# out-of-the-box run must not answer REPORT_DISABLED. Set the env var to
+# ``false`` to turn either feature off explicitly.
 EXTERNAL_URL_ENABLED = env_bool("EXTERNAL_URL_ENABLED", False)
-HEATMAP_ENABLED = env_bool("HEATMAP_ENABLED", False)
-REPORT_ENABLED = env_bool("REPORT_ENABLED", False)
+HEATMAP_ENABLED = env_bool("HEATMAP_ENABLED", True)
+REPORT_ENABLED = env_bool("REPORT_ENABLED", True)
+
+# Maximum number of representative frames for which the XAI triple is
+# generated/streamed per session (bounded work for long videos).
+HEATMAP_MAX_FRAMES = env_int_clamped("HEATMAP_MAX_FRAMES", 3, 1, 20)
 
 # ---------------------------------------------------------------------------
 # Domain configuration: upload limits, decision threshold, fusion weights
@@ -214,6 +259,13 @@ SUPPORTED_VIDEO_FORMATS = env_list("SUPPORTED_VIDEO_FORMATS", "mp4,avi")
 MAX_UPLOAD_SIZE_BYTES = env_int_clamped(
     "MAX_UPLOAD_SIZE_BYTES", 52_428_800, 1, 52_428_800
 )
+
+# Frame sampling for the visual pipeline: at least FRAME_MIN_FPS frames per
+# second of video (Requirement 2.1) are sampled, capped at
+# FRAME_SAMPLE_MAX_FRAMES so a long video cannot pin a worker (the frames are
+# decoded lazily, never all at once).
+FRAME_MIN_FPS = env_float_clamped("FRAME_MIN_FPS", 1.0, 0.1, 30.0)
+FRAME_SAMPLE_MAX_FRAMES = env_int_clamped("FRAME_SAMPLE_MAX_FRAMES", 300, 1, 100_000)
 
 # Decision threshold in [0.0, 1.0] (Requirement 4.3): score >= threshold ->
 # "deepfake", else "authentic".

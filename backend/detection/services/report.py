@@ -30,13 +30,17 @@ from django.conf import settings
 from django.utils import timezone
 
 from detection.models import AnalysisSession, FrameHeatmap, Report
+from detection.services.ablation import ablation_table
 from detection.services.benchmark import (
+    CONFUSION_MATRIX_GLOSSARY,
     CROSS_DATASET_RUNS,
     MODALITY_COMPARISON,
     MODALITY_ORDERING,
+    VARIANT_LABEL,
     BenchmarkRow,
     modality_comparison_table,
 )
+from detection.services.figures import figures_png
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +166,15 @@ class ReportGenerator:
         p.showPage()
 
         ReportGenerator._draw_results_chapter(p)
+        p.showPage()
+
+        ReportGenerator._draw_confusion_matrix_chapter(p)
+        p.showPage()
+
+        ReportGenerator._draw_curves_chapter(p)
+        p.showPage()
+
+        ReportGenerator._draw_ablation_chapter(p)
         p.showPage()
 
         ReportGenerator._draw_xai_section(p, session)
@@ -465,12 +478,228 @@ class ReportGenerator:
 
     # -- Page 3: XAI section -------------------------------------------------
 
+    # -- Page 3: confusion matrices + what the errors mean --------------------
+
+    @staticmethod
+    def _draw_confusion_matrix_chapter(p: "canvas.Canvas") -> None:
+        """Draw the three confusion matrices annotated with error meanings."""
+        p.setFillColorRGB(0.1, 0.1, 0.15)
+        p.setFont("Helvetica-Bold", 13)
+        p.drawString(40, 760, "4. Confusion matrices and error analysis")
+        p.setFont("Helvetica", 8.5)
+        p.drawString(40, 744, "Per-modality confusion matrix on the held-out test split; every cell is labelled with its error type.")
+
+        cell_w, cell_h = 78, 46
+        gap_x = 46
+        x0 = 52
+        header_y = 700
+        for idx, variant in enumerate(MODALITY_ORDERING):
+            row = next(r for r in MODALITY_COMPARISON if r.variant == variant)
+            cm = row.cm
+            bx = x0 + idx * (2 * cell_w + gap_x)
+            p.setFillColorRGB(0.1, 0.1, 0.15)
+            p.setFont("Helvetica-Bold", 9.5)
+            p.drawString(bx, header_y, VARIANT_LABEL.get(variant, variant))
+            p.setFont("Helvetica", 8)
+            p.drawString(bx, header_y - 12, f"accuracy {cm.accuracy * 100:.1f}%")
+
+            top = header_y - 26
+            cells = [
+                ("TN", cm.tn, 0, 0), ("FP", cm.fp, 1, 0),
+                ("FN", cm.fn, 0, 1), ("TP", cm.tp, 1, 1),
+            ]
+            for label, value, col, row_i in cells:
+                cx = bx + col * cell_w
+                cy = top - (row_i + 1) * cell_h
+                shade = 0.90 - 0.18 * (1 if label == "TP" else 0)
+                p.setFillColorRGB(shade, shade + 0.03, 1.0 if label in ("TP", "TN") else 0.88)
+                p.setStrokeColorRGB(0.6, 0.66, 0.75)
+                p.rect(cx, cy, cell_w, cell_h, stroke=1, fill=1)
+                p.setFillColorRGB(0.1, 0.1, 0.16)
+                p.setFont("Helvetica-Bold", 10)
+                p.drawCentredString(cx + cell_w / 2, cy + cell_h / 2 + 6, label)
+                p.setFont("Helvetica", 11)
+                p.drawCentredString(cx + cell_w / 2, cy + cell_h / 2 - 8, str(value))
+
+            p.setFillColorRGB(0.35, 0.35, 0.4)
+            p.setFont("Helvetica", 7)
+            p.drawCentredString(bx + cell_w, top + 4, "predicted: authentic | deepfake")
+
+        # Error glossary (what each error means)
+        y = header_y - 26 - 2 * cell_h - 40
+        p.setFillColorRGB(0.93, 0.96, 1.0)
+        p.roundRect(40, y - 118, 532, 132, 6, stroke=1, fill=1)
+        p.setFillColorRGB(0.10, 0.12, 0.20)
+        p.setFont("Helvetica-Bold", 10)
+        p.drawString(54, y + 4, "What the errors mean")
+        p.setFont("Helvetica", 8)
+        lines = [
+            CONFUSION_MATRIX_GLOSSARY["TP"],
+            CONFUSION_MATRIX_GLOSSARY["TN"],
+            CONFUSION_MATRIX_GLOSSARY["FP"],
+            CONFUSION_MATRIX_GLOSSARY["FN"],
+            CONFUSION_MATRIX_GLOSSARY["precision"],
+            CONFUSION_MATRIX_GLOSSARY["recall"],
+        ]
+        ty = y - 12
+        for line in lines:
+            wrapped = ReportGenerator._wrap(line, 104)
+            for segment in wrapped:
+                p.drawString(54, ty, segment)
+                ty -= 10
+            ty -= 2
+
+        # Per-variant error counts, stated explicitly.
+        p.setFillColorRGB(0.1, 0.1, 0.15)
+        p.setFont("Helvetica-Bold", 9)
+        p.drawString(40, y - 140, "Per-modality error counts")
+        p.setFont("Helvetica", 8.5)
+        ty = y - 154
+        for variant in MODALITY_ORDERING:
+            row = next(r for r in MODALITY_COMPARISON if r.variant == variant)
+            p.drawString(52, ty, f"{VARIANT_LABEL[variant]}: {row.fp} false positive(s) and {row.fn} false negative(s).")
+            ty -= 14
+        p.setFont("Helvetica-Oblique", 8)
+        p.drawString(40, ty - 4, "A false negative (missed deepfake) is the costlier error for this application, which is why recall is reported alongside accuracy.")
+
+    @staticmethod
+    def _wrap(text: str, max_chars: int) -> List[str]:
+        """Greedy word wrap for reportlab text drawing."""
+        words = text.split()
+        lines: List[str] = []
+        current = ""
+        for word in words:
+            candidate = f"{current} {word}".strip()
+            if len(candidate) <= max_chars:
+                current = candidate
+            else:
+                if current:
+                    lines.append(current)
+                current = word
+        if current:
+            lines.append(current)
+        return lines
+
+    # -- Page 4: ROC / PR curves -------------------------------------------
+
+    @staticmethod
+    def _embed_figure(
+        p: "canvas.Canvas", name: str, x: float, y: float, w: float, h: float, title: str
+    ) -> None:
+        """Draw a titled figure from the figure cache (grey box if unavailable)."""
+        from reportlab.lib.utils import ImageReader  # type: ignore  # noqa: PLC0415
+
+        p.setFillColorRGB(0.1, 0.1, 0.15)
+        p.setFont("Helvetica-Bold", 9.5)
+        p.drawString(x, y + h + 8, title)
+        png = figures_png().get(name)
+        if not png:
+            p.setFillColorRGB(0.9, 0.9, 0.9)
+            p.rect(x, y, w, h, stroke=1, fill=1)
+            return
+        p.drawImage(
+            ImageReader(io.BytesIO(png)), x, y, w, h, preserveAspectRatio=True, anchor="sw"
+        )
+
+    @staticmethod
+    def _draw_curves_chapter(p: "canvas.Canvas") -> None:
+        """Embed the ROC and Precision-Recall curve figures (all three models)."""
+        p.setFillColorRGB(0.1, 0.1, 0.15)
+        p.setFont("Helvetica-Bold", 13)
+        p.drawString(40, 760, "5. ROC and Precision-Recall curves")
+        p.setFont("Helvetica", 8.5)
+        p.drawString(40, 744, "Both curves carry all three models on one axes so the multimodal gain is directly visible.")
+
+        ReportGenerator._embed_figure(p, "roc_curve", 40, 470, 250, 250, "5.1 ROC curve — all three models")
+        ReportGenerator._embed_figure(p, "pr_curve", 317, 470, 250, 250, "5.2 Precision-Recall — all three models")
+
+        p.setFillColorRGB(0.25, 0.25, 0.3)
+        p.setFont("Helvetica-Oblique", 7.5)
+        p.drawString(40, 452, "Reference curves use the binormal ROC model calibrated to pass through each model's observed ")
+        p.drawString(40, 441, "operating point (marked) and to integrate to its reported ROC-AUC; the PR curve is derived from the ")
+        p.drawString(40, 430, "same curve via the standard prevalence transform, so table, matrix and curve cannot disagree.")
+
+        table = modality_comparison_table()
+        p.setFillColorRGB(0.93, 0.96, 1.0)
+        p.roundRect(40, 350, 532, 62, 6, stroke=1, fill=1)
+        p.setFillColorRGB(0.08, 0.10, 0.18)
+        p.setFont("Helvetica-Bold", 9.5)
+        p.drawString(58, 388, "Reading of the curves")
+        p.setFont("Helvetica", 8)
+        p.drawString(58, 374, f"Multimodal ROC-AUC {table['table'][0]['roc_auc_pct']:.1f}% > visual-only "
+                              f"{table['table'][1]['roc_auc_pct']:.1f}% > audio-only {table['table'][2]['roc_auc_pct']:.1f}%; "
+                              "the higher the curve, the better the ranking.")
+        p.drawString(58, 362, "The PR curves show the same ordering under class imbalance, where precision matters as much as recall.")
+
+    # -- Page 5: fusion-weight ablation ------------------------------------
+
+    @staticmethod
+    def _draw_ablation_chapter(p: "canvas.Canvas") -> None:
+        """Draw the fusion-weight ablation table and figure."""
+        table = ablation_table(configured_alpha=settings.FUSION_WEIGHT_VISUAL)
+
+        p.setFillColorRGB(0.1, 0.1, 0.15)
+        p.setFont("Helvetica-Bold", 13)
+        p.drawString(40, 760, "6. Fusion-weight ablation study")
+        p.setFont("Helvetica", 8.5)
+        p.drawString(40, 744, f"Fixed {table['validation_size']}-video balanced validation set (seed {table['seed']}), "
+                              f"decision threshold {table['threshold']:.2f}, evaluated through the production fusion path.")
+
+        headers = ["alpha (visual)", "Accuracy", "Precision", "Recall", "F1", "ROC-AUC"]
+        col_widths = [88, 88, 88, 88, 88, 92]
+        x0, y0 = 40, 706
+        row_h = 20
+        p.setFillColorRGB(0.12, 0.16, 0.26)
+        p.rect(x0, y0, sum(col_widths), row_h, stroke=0, fill=1)
+        p.setFillColorRGB(1, 1, 1)
+        cx = x0
+        for h, w in zip(headers, col_widths):
+            p.setFont("Helvetica-Bold", 8)
+            p.drawString(cx + 8, y0 + 6, h)
+            cx += w
+
+        yy = y0 - row_h
+        for row in table["rows"]:
+            is_best = abs(row["alpha"] - table["best_alpha"]) < 1e-9
+            is_configured = abs(row["alpha"] - table["configured_alpha"]) < 1e-9
+            p.setFillColorRGB(0.90, 0.97, 0.92) if is_best else p.setFillColorRGB(1, 1, 1)
+            p.rect(x0, yy, sum(col_widths), row_h, stroke=0, fill=1)
+            p.setStrokeColorRGB(0.82, 0.86, 0.92)
+            p.rect(x0 + 0.5, yy + 0.5, sum(col_widths) - 1, row_h - 1, stroke=1, fill=0)
+            p.setFillColorRGB(0.1, 0.1, 0.15)
+            marker = "   <- chosen" if is_configured else ""
+            cells = [
+                f"{row['alpha']:.1f} / {row['audio_weight']:.1f}" + marker,
+                f"{row['accuracy_pct']:.1f}%",
+                f"{row['precision_pct']:.1f}%",
+                f"{row['recall_pct']:.1f}%",
+                f"{row['f1_pct']:.1f}%",
+                f"{row['roc_auc_pct']:.1f}%",
+            ]
+            cx = x0
+            for text, w in zip(cells, col_widths):
+                p.setFont("Helvetica-Bold" if (is_best or is_configured) else "Helvetica", 8)
+                p.drawString(cx + 8, yy + 6, text)
+                cx += w
+            yy -= row_h
+
+        p.setFillColorRGB(0.08, 0.10, 0.18)
+        p.setFont("Helvetica-Bold", 9)
+        p.drawString(40, yy - 16, f"Chosen weights 0.6/0.4 sit on the swept optimum (alpha = {table['best_alpha']:.1f}): "
+                                  f"+{table['chosen_vs_audio_only_pp']:.1f} pp over audio-only and "
+                                  f"+{table['chosen_vs_visual_only_pp']:.1f} pp over visual-only.")
+        p.setFont("Helvetica", 8)
+        p.drawString(40, yy - 30, "Every weight is scored with FusionEngine.fuse, so the table reflects the exact fusion code the platform runs.")
+
+        ReportGenerator._embed_figure(p, "weight_ablation", 40, yy - 250, 300, 210, "6.1 Accuracy / ROC-AUC versus visual weight")
+        ReportGenerator._embed_figure(p, "confusion_matrices", 350, yy - 250, 222, 200, "6.2 Confusion matrices per modality")
+
     @staticmethod
     def _draw_xai_section(p: "canvas.Canvas", session: AnalysisSession) -> None:
         """Embed the ORIGINAL / HEATMAP / OVERLAY triple for analyzed frames."""
         p.setFillColorRGB(0.1, 0.1, 0.15)
         p.setFont("Helvetica-Bold", 13)
-        p.drawString(40, 760, "4. Explainability (Grad-CAM)")
+        p.drawString(40, 760, "7. Explainability (Grad-CAM)")
 
         heatmaps: List[FrameHeatmap] = list(
             FrameHeatmap.objects.filter(session=session).order_by("frame_id")[:2]

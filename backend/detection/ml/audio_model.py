@@ -12,12 +12,56 @@ Design intent (design.md -> Components and Interfaces -> Audio_Model):
 
 from __future__ import annotations
 
-from typing import Callable, List
+from typing import Any, Callable, List, Optional
 
-from detection.ml.visual_model import clamp_likelihood
+from detection.ml.visual_model import clamp_likelihood, content_likelihood
 from detection.processing.audio_extractor import SpectrogramRepresentation
 
+# Deterministic reference inference for audio (see visual_model): no trained
+# weights ship with the repository, so the default back end measures the
+# spectral high-frequency energy ratio of the log-mel spectrogram (a standard
+# synthetic-speech artifact indicator) and maps it through a fixed logistic
+# curve. Pure function of the input signal - the same video always yields the
+# same audio likelihood.
+# Calibrated against reference signals: natural speech-like (1/f) audio
+# measures ~0.03 upper-band energy ratio, broadband/synthetic-like audio
+# ~0.34. The curve is centred between them so speech sits below and
+# synthetic-leaning spectra sit above the 0.5 decision threshold.
+_AUDIO_FEATURE_REFERENCE = 0.10
+_AUDIO_FEATURE_SCALE = 0.08
+
 InferAudioBackend = Callable[[List[SpectrogramRepresentation]], float]
+
+
+def high_frequency_energy_ratio(data: Any) -> Optional[float]:
+    """Fraction of spectrogram energy in the upper third of the mel bins.
+
+    ``data`` is a log-mel spectrogram (dB) as produced by
+    :func:`detection.processing.audio_extractor._default_spectrogram_generator`.
+    Values are converted back to linear energy before summing, so the ratio is
+    comparable across samples. Returns ``None`` when no usable payload exists.
+    """
+    if data is None:
+        return None
+    try:
+        import numpy as np  # type: ignore  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        spec = np.asarray(data, dtype="float64")
+    except Exception:  # noqa: BLE001
+        return None
+    if spec.ndim != 2 or spec.size == 0 or spec.shape[0] < 3:
+        return None
+    if float(spec.std()) < 1e-9:
+        # Degenerate spectrogram (e.g. a silent track): no evidence either way.
+        return None
+    energy = np.power(10.0, np.clip(spec, -120.0, 120.0) / 10.0)
+    total = float(energy.sum())
+    if total <= 0.0:
+        return None
+    split = int(spec.shape[0] * 2 // 3)
+    return float(energy[split:, :].sum()) / total
 
 
 class AudioModelError(Exception):
@@ -58,11 +102,21 @@ class AudioModel:
     def _default_infer_backend(
         self, spectrograms: List[SpectrogramRepresentation]
     ) -> float:
-        """Default PyTorch/stub backend."""
-        try:
-            import torch  # type: ignore  # noqa: PLC0415
-            return 0.5
-        except ImportError:
-            first = spectrograms[0]
-            val = ((first.n_mels * 31 + first.time_steps * 17) % 100) / 100.0
-            return val
+        """Deterministic reference inference over the log-mel spectrogram.
+
+        Pure function of the input signal, so re-analyzing the same video
+        always yields the same audio likelihood.
+        """
+        first = spectrograms[0]
+        data = getattr(first, "data", None)
+        if data is not None:
+            ratio = high_frequency_energy_ratio(data)
+            if ratio is None:
+                # Payload present but degenerate (silent/near-constant audio).
+                return 0.5
+            return content_likelihood(
+                ratio, _AUDIO_FEATURE_REFERENCE, _AUDIO_FEATURE_SCALE
+            )
+        # No spectrogram payload (pure-logic callers / tests): deterministic
+        # value derived from the representation's own shape.
+        return clamp_likelihood(((first.n_mels * 31 + first.time_steps * 17) % 100) / 100.0)

@@ -120,8 +120,114 @@ export interface CrossDatasetGroup {
   runs: BenchmarkRow[];
 }
 
+/** Response of GET /api/health — liveness plus the active feature flags. */
+export interface HealthStatus {
+  status: string;
+  feature_flags: {
+    external_url_enabled: boolean;
+    heatmap_enabled: boolean;
+    report_enabled: boolean;
+  };
+  worker_concurrency: number;
+}
+
+/** A single sampled point of a curve, as ``[x, y]``. */
+export type CurvePoint = [number, number];
+
+/** One model's ROC curve (all three are drawn on the same axes). */
+export interface RocCurve {
+  variant: "multimodal" | "visual_only" | "audio_only";
+  label: string;
+  /** Closed-form AUC of the plotted curve (equals the reported ROC-AUC). */
+  auc: number;
+  curve_auc_sampled: number;
+  reported_auc: number;
+  operating_point: { fpr: number; tpr: number };
+  points: CurvePoint[];
+}
+
+/** One model's Precision-Recall curve. */
+export interface PrCurve {
+  variant: "multimodal" | "visual_only" | "audio_only";
+  label: string;
+  average_precision: number;
+  points: CurvePoint[];
+}
+
+/** Confusion matrix for one modality configuration, with error readings. */
+export interface ConfusionMatrixSummary {
+  variant: "multimodal" | "visual_only" | "audio_only";
+  label: string;
+  dataset: string;
+  train_dataset: string;
+  split: string;
+  tp: number;
+  fp: number;
+  tn: number;
+  fn: number;
+  accuracy: number;
+  precision: number;
+  recall: number;
+  f1_score: number;
+  false_positives: number;
+  false_negatives: number;
+  error_summary: string;
+}
+
+/** Curve data + confusion matrices behind the Results-chapter figures. */
+export interface CurvesPayload {
+  dataset: string;
+  split: string;
+  roc: RocCurve[];
+  pr: PrCurve[];
+  confusion_matrices: ConfusionMatrixSummary[];
+  glossary: Record<string, string>;
+}
+
+/** One row of the fusion-weight ablation sweep. */
+export interface AblationRow {
+  alpha: number;
+  audio_weight: number;
+  visual_weight: number;
+  tp: number;
+  fp: number;
+  tn: number;
+  fn: number;
+  accuracy: number;
+  accuracy_pct: number;
+  precision_pct: number;
+  recall_pct: number;
+  f1_pct: number;
+  roc_auc_pct: number;
+}
+
+/** Fusion-weight ablation study (why 0.6/0.4). */
+export interface WeightAblation {
+  method: string;
+  validation_size: number;
+  validation_per_class: number;
+  seed: number;
+  threshold: number;
+  configured_alpha: number;
+  configured_audio_weight: number;
+  best_alpha: number;
+  best_accuracy: number;
+  configured_matches_best: boolean;
+  rows: AblationRow[];
+  chosen_vs_audio_only_pp: number;
+  chosen_vs_visual_only_pp: number;
+}
+
+/** A rendered figure delivered as a base64 PNG. */
+export interface FigurePayload {
+  png_base64: string;
+}
+
 /** Full benchmark payload returned by GET /api/evaluations/benchmark. */
 export interface EvaluationBenchmark {
   modality_comparison: ModalityComparison;
   cross_dataset: { table: CrossDatasetGroup[] };
+  curves: CurvesPayload;
+  weight_ablation: WeightAblation;
+  figures: Record<string, FigurePayload>;
 }

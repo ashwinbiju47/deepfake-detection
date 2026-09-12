@@ -8,6 +8,9 @@ channels==4.1.0
 channels-redis==4.2.0
 daphne==4.1.2
 
+# Static / single-origin SPA serving (used in the deployed container)
+whitenoise==6.7.0
+
 # Async task queue + broker
 celery==5.4.0
 redis==5.0.4
@@ -32,6 +35,9 @@ mediapipe
 # Explainability / reporting
 reportlab==4.2.0
 weasyprint==62.1
+# Evaluation figures (confusion matrices, ROC / precision-recall curves and the
+# fusion-weight ablation chart). pdf/agg backends only - no GUI toolkit needed.
+matplotlib==3.9.4
 
 # Testing (unit + property-based)
 pytest==8.2.1

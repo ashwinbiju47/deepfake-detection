@@ -1,0 +1,55 @@
+# Deepfake Detection Platform — Docker Compose for Oracle Cloud Always Free.
+#
+# The app image already bundles Daphne (HTTP + WebSocket :7860), the Celery
+# worker and an in-container Redis broker, all supervised by supervisord
+# (see Dockerfile / supervisord.conf). Compose adds a real PostgreSQL service
+# so the free-tier VM gets the same database the dev stack uses.
+#
+#   docker compose up -d --build
+#
+# The web service reads its configuration from the shell environment or a
+# .env file next to this file (docker compose loads it automatically).
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-deepfake}
+      POSTGRES_USER: ${POSTGRES_USER:-deepfake}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deepfake}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-deepfake} -d ${POSTGRES_DB:-deepfake}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "80:7860"
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set DJANGO_SECRET_KEY in .env}
+      DJANGO_DEBUG: "false"
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-*}
+      DJANGO_DB_ENGINE: "postgres"
+      POSTGRES_DB: ${POSTGRES_DB:-deepfake}
+      POSTGRES_USER: ${POSTGRES_USER:-deepfake}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deepfake}
+      POSTGRES_HOST: "db"
+      POSTGRES_PORT: "5432"
+      DJANGO_SERVE_SPA: "true"
+      EXTERNAL_URL_ENABLED: "true"
+      HEATMAP_ENABLED: "true"
+      REPORT_ENABLED: "true"
+      CELERY_WORKER_CONCURRENCY: ${CELERY_WORKER_CONCURRENCY:-4}
+      MAX_UPLOAD_SIZE_BYTES: ${MAX_UPLOAD_SIZE_BYTES:-52428800}
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

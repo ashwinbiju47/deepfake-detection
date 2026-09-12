@@ -13,6 +13,7 @@ from typing import Any
 from celery import shared_task
 from django.conf import settings
 from django.db import transaction
+from django.utils import timezone
 
 from detection.ml import AudioModel, AudioModelError, VisualModel
 from detection.models import (
@@ -58,7 +59,8 @@ def analyze_session(self: Any, session_id: str) -> str:
         return "CANCELED"
 
     session.status = AnalysisSession.Status.PROCESSING
-    session.save(update_fields=["status"])
+    session.started_at = timezone.now()
+    session.save(update_fields=["status", "started_at"])
 
     # Stream initial 0% progress (Requirement 5.3, 7.1)
     StreamService.publish_event(
@@ -68,7 +70,10 @@ def analyze_session(self: Any, session_id: str) -> str:
     )
 
     media_dir = session_media_dir(session.id)
-    media_files = list(media_dir.glob("*")) if media_dir.exists() else []
+    # Sort the candidates so the analyzed file is a deterministic function of
+    # the upload (unordered globbing could pick a different file between runs,
+    # which made the same video report different scores).
+    media_files = sorted(p for p in media_dir.glob("*") if p.is_file()) if media_dir.exists() else []
     if not media_files:
         session.status = AnalysisSession.Status.FAILED
         session.save(update_fields=["status"])
@@ -84,11 +89,19 @@ def analyze_session(self: Any, session_id: str) -> str:
 
     visual_likelihood: float | None = None
     audio_likelihood: float | None = None
+    outcome = None
 
     # 1. Visual Pipeline (Requirement 2)
     try:
         extractor = FrameExtractor()
-        outcome = extractor.extract_visual_signal(video_path)
+        outcome = extractor.extract_visual_signal(
+            video_path,
+            min_fps=getattr(settings, "FRAME_MIN_FPS", 1.0),
+            max_frames=getattr(settings, "FRAME_SAMPLE_MAX_FRAMES", None),
+        )
+        # Deterministic face ordering: analysis order never depends on detector
+        # return order (Requirement 2 / reproducibility).
+        outcome.faces.sort(key=lambda f: (f.frame_index, f.y, f.x))
 
         if outcome.has_visual_signal and outcome.faces:
             visual_model = VisualModel()
@@ -215,7 +228,8 @@ def analyze_session(self: Any, session_id: str) -> str:
     else:
         session.status = AnalysisSession.Status.COMPLETED
 
-    session.save(update_fields=["status"])
+    session.completed_at = timezone.now()
+    session.save(update_fields=["status", "completed_at"])
 
     StreamService.publish_event(
         session_id,
@@ -232,6 +246,12 @@ def analyze_session(self: Any, session_id: str) -> str:
             "modalities_used": fusion_outcome.modalities_used,
             "inconclusive": fusion_outcome.inconclusive,
             "status": session.status,
+            # Per-modality evidence so the dashboard can explain the fused
+            # probability instead of showing a single opaque number.
+            "visual_likelihood": visual_likelihood,
+            "audio_likelihood": audio_likelihood,
+            "weights": {"visual": weight_visual, "audio": weight_audio},
+            "threshold": fusion_outcome.threshold_used,
         },
     )
 
@@ -240,7 +260,12 @@ def analyze_session(self: Any, session_id: str) -> str:
     # frames. Heatmap failure never affects the persisted classification
     # (Requirement 11.2) — errors are logged and streamed per frame only.
     try:
-        if getattr(settings, "HEATMAP_ENABLED", False) and outcome.has_visual_signal and outcome.faces:
+        if (
+            getattr(settings, "HEATMAP_ENABLED", False)
+            and outcome is not None
+            and outcome.has_visual_signal
+            and outcome.faces
+        ):
             from detection.services.xai import XAIGenerator  # noqa: PLC0415
 
             visual_model_for_xai = VisualModel()

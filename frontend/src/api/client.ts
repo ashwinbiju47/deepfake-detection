@@ -14,6 +14,7 @@ import type {
   AnalysisSession,
   EvaluationBenchmark,
   EvaluationMetrics,
+  HealthStatus,
   UploadResult,
 } from "./types";
 
@@ -86,15 +87,41 @@ export class ApiClient {
     return (await res.json()) as AnalysisSession;
   }
 
-  /** Download the PDF report for a completed session (WHERE REPORT_ENABLED). */
+  /**
+   * Download the PDF report for a completed session (WHERE REPORT_ENABLED).
+   *
+   * On failure the backend's typed error (e.g. ``REPORT_DISABLED``,
+   * ``SESSION_INCOMPLETE``) is surfaced as the thrown Error message so the UI
+   * can explain *why* the download failed instead of showing a generic error.
+   */
   async getReport(sessionId: string): Promise<Blob> {
     const res = await this.fetchImpl(
       `${this.baseUrl}/analyses/${encodeURIComponent(sessionId)}/report`
     );
     if (!res.ok) {
-      throw new Error(`getReport failed: ${res.status}`);
+      let message = `Report unavailable (HTTP ${res.status}).`;
+      try {
+        const data = (await res.json()) as { message?: string; error_code?: string };
+        if (data?.message) message = data.message;
+        else if (data?.error_code) message = `Report unavailable: ${data.error_code}.`;
+      } catch {
+        // Non-JSON error body: keep the HTTP-status message.
+      }
+      throw new Error(message);
     }
     return await res.blob();
+  }
+
+  /**
+   * Service liveness plus the active feature flags. Lets the UI hide or
+   * explain features that are switched off server-side (e.g. the PDF report).
+   */
+  async getHealth(): Promise<HealthStatus> {
+    const res = await this.fetchImpl(`${this.baseUrl}/health`);
+    if (!res.ok) {
+      throw new Error(`getHealth failed: ${res.status}`);
+    }
+    return (await res.json()) as HealthStatus;
   }
 
   /** Retrieve persisted model evaluation metrics for a run. */

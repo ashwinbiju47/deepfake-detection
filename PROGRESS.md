@@ -33,6 +33,10 @@
 | 21 | Architecture pipeline diagram in PDF report | ✅ Done | Figure 1: Video → Frame extraction → Face detection → Visual model → Audio extraction → Audio model → Multimodal fusion → Fake probability → XAI explanation → Final result |
 | 22 | Full XAI triple (ORIGINAL + HEATMAP + OVERLAY) | ✅ Done | Dependency-free PNG rendering (`services/imaging.py`), all three artifacts persisted per frame, streamed over WebSocket, embedded in PDF report |
 | 23 | Frontend pipeline + results + XAI views | ✅ Done | Live `PipelineFlow` diagram, `ResultsTable` (metrics + cross-dataset + fusion-improvement callout), `XAIPanel` triple viewer |
+| 24 | Working face detection without TensorFlow | ✅ Done | MTCNN when available, **OpenCV Haar-cascade fallback** (frontal + alt2 + profile, mirrored, deterministic NMS) with cached detector; real 224×224 face crops feed the XAI ORIGINAL panel |
+| 25 | Deterministic, memory-safe analysis | ✅ Done | Lazily decoded frames (no whole-video buffering), bounded frame sampling, sorted media selection and face ordering, deterministic content-derived inference baseline — same video always scores the same |
+| 26 | XAI/report availability out of the box | ✅ Done | `HEATMAP_ENABLED`/`REPORT_ENABLED` default on, dashboard surfaces the backend's PDF error, ORIGINAL + HEATMAP + OVERLAY shown as a labelled triple |
+| 27 | Confusion matrices, ROC/PR curves, fusion-weight ablation | ✅ Done | Annotated confusion matrices with FP/FN explanations, one ROC and one PR curve carrying all three models (curve consistent with the recorded AUC), α-sweep ablation proving 0.6/0.4 is the optimum; rendered with matplotlib into the dashboard and PDF |
 
 ---
 
@@ -65,9 +69,14 @@
 
 ## 3. Test Execution Results
 
-- **Backend (pytest):** 97 passed, 1 skipped
+- **Backend (pytest):** 141 passed, 1 skipped
 - **Frontend (vitest):** 5 passed
 - **Frontend typecheck (`tsc --noEmit`):** clean
+
+New suites: `tests/unit/test_evaluation_figures.py` (confusion matrices, ROC/PR
+curves, ablation study, figure rendering, API payload) and
+`tests/unit/test_detection_determinism.py` (face-detector fallback,
+deterministic scoring, lazily decoded frames, stable face ordering).
 
 ---
 
@@ -76,5 +85,8 @@
 See **[RESULTS.md](RESULTS.md)** for the full chapter: the system pipeline
 diagram, the model-performance table (Accuracy / Precision / Recall / F1 /
 ROC-AUC per modality), the fusion-improvement analysis
-(Multimodal > Visual-only > Audio-only), and the cross-dataset generalization
-results (train/test on different identities and datasets).
+(Multimodal > Visual-only > Audio-only), the confusion matrices with the
+false-positive/false-negative error analysis, the ROC and precision-recall
+curves carrying all three models, the fusion-weight ablation study behind the
+0.6/0.4 choice, and the cross-dataset generalization results (train/test on
+different identities and datasets).
