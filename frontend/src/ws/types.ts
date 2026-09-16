@@ -9,7 +9,7 @@
  * StreamService.publish_event), so the client receives one flat object per
  * event. These types match that wire format exactly.
  */
-import type { ClassificationLabel } from "../api/types";
+import type { ClassificationLabel, MediaKind } from "../api/types";
 
 /** Shared envelope fields added by the backend to every event payload. */
 interface EventEnvelope {
@@ -43,9 +43,18 @@ export interface ResultPayload {
   modalities_used: Array<"visual" | "audio">;
   inconclusive: boolean;
   status: string;
+  /** Kind of media analyzed (video | image | audio). */
+  media_kind?: MediaKind;
+  /** Original filename of the analyzed upload. */
+  source_ref?: string;
   /** Per-modality evidence behind the fused score (null when absent). */
   visual_likelihood?: number | null;
   audio_likelihood?: number | null;
+  /** Persisted per-modality pipeline states (OK / NO_*_SIGNAL / *_ERROR). */
+  visual_state?: string | null;
+  audio_state?: string | null;
+  frames_analyzed?: number | null;
+  faces_isolated?: number | null;
   /** Fusion weights actually applied to the two modalities. */
   weights?: { visual: number; audio: number };
   threshold?: number;

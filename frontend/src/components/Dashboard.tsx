@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { ApiClient } from "../api/client";
+import type { MediaKind } from "../api/types";
 import { ResultStreamer } from "../ws/client";
 import type { ConnectionState } from "../ws/client";
 import type { HeatmapPayload, ResultPayload, StreamEvent } from "../ws/types";
 import EvaluationFigures from "./EvaluationFigures";
 import PipelineFlow, { PIPELINE_STAGES } from "./PipelineFlow";
 import ResultsTable from "./ResultsTable";
+import SessionMetrics from "./SessionMetrics";
 import XAIPanel from "./XAIPanel";
 
 interface DashboardProps {
@@ -13,13 +15,21 @@ interface DashboardProps {
   onReset: () => void;
 }
 
-/** Map WS progress percentage onto the coarse pipeline-stage index for the flow diagram. */
-function stageFromProgress(percent: number, hasResult: boolean): number {
+/**
+ * Map WS progress percentage onto the coarse pipeline-stage index for the
+ * flow diagram. Image uploads skip the audio stages entirely (their pipeline
+ * ends at the visual model), so "done" maps to the XAI stage instead.
+ */
+function stageFromProgress(
+  percent: number,
+  hasResult: boolean,
+  mediaKind: MediaKind | null
+): number {
   if (hasResult) return PIPELINE_STAGES.length - 1;
-  if (percent <= 0) return 0; // Video ingested
+  if (percent <= 0) return 0; // media ingested
   if (percent < 50) return 3; // Visual pipeline done (frames, faces, visual model)
   if (percent < 100) return 6; // Audio + fusion done
-  return 7;
+  return mediaKind === "image" ? 8 : 7;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({ sessionId, onReset }) => {
@@ -31,6 +41,43 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, onReset }) => {
   const [reportError, setReportError] = useState<string | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
   const [reportEnabled, setReportEnabled] = useState(true);
+  const [mediaKind, setMediaKind] = useState<MediaKind | null>(null);
+
+  // If this session already completed before the dashboard opened (e.g. the
+  // user re-opened the app), fetch the persisted last-analysis metrics.
+  useEffect(() => {
+    let cancelled = false;
+    new ApiClient()
+      .getSession(sessionId)
+      .then((detail) => {
+        if (cancelled) return;
+        setMediaKind(detail.media_kind);
+        if (detail.status === "COMPLETED" || detail.status === "INCONCLUSIVE") {
+          setResult({
+            score: detail.fusion?.score ?? null,
+            label: detail.fusion?.label ?? null,
+            modalities_used: detail.fusion?.modalities_used ?? [],
+            inconclusive: detail.fusion?.inconclusive ?? true,
+            status: detail.status,
+            media_kind: detail.media_kind,
+            source_ref: detail.source_ref,
+            visual_likelihood: detail.visual?.likelihood ?? null,
+            audio_likelihood: detail.audio?.likelihood ?? null,
+            visual_state: detail.visual?.state ?? null,
+            audio_state: detail.audio?.state ?? null,
+            frames_analyzed: detail.visual?.frames_analyzed ?? null,
+            faces_isolated: detail.visual?.faces_isolated ?? null,
+          });
+          setProgress(100);
+        }
+      })
+      .catch(() => {
+        /* advisory only: the WS stream is the primary source */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
 
   // Feature flags: the PDF endpoint can be switched off server-side, in which
   // case the button is disabled and says so instead of failing on click.
@@ -88,9 +135,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, onReset }) => {
       } else if (event.type === "result") {
         const payload = event as unknown as ResultPayload;
         setResult(payload);
+        if (payload.media_kind) setMediaKind(payload.media_kind);
         setProgress(100);
       } else if (event.type === "heatmap") {
-        setHeatmaps((prev) => [...prev, event as unknown as HeatmapPayload]);
+        // Replay after reconnect can re-deliver an already-seen heatmap; dedupe
+        // by heatmap_id so the panel never renders the same frame twice.
+        const incoming = event as unknown as HeatmapPayload;
+        setHeatmaps((prev) =>
+          prev.some((h) => h.heatmap_id === incoming.heatmap_id)
+            ? prev
+            : [...prev, incoming]
+        );
       } else if (event.type === "error") {
         const err = event as { message?: string; error_code?: string };
         setErrorMessage(err.message || "Analysis pipeline error.");
@@ -104,7 +159,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, onReset }) => {
     };
   }, [sessionId]);
 
-  const activeStage = stageFromProgress(progress, result != null);
+  const activeStage = stageFromProgress(progress, result != null, mediaKind);
 
   return (
     <div className="mx-auto max-w-4xl space-y-6 rounded-2xl border border-slate-800 bg-slate-900 p-6 text-white shadow-xl">
@@ -144,8 +199,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, onReset }) => {
         <div className="space-y-2">
           <h4 className="text-sm font-semibold text-slate-300">
             Detection Pipeline (live)
+            {mediaKind && (
+              <span className="ml-2 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                input: {mediaKind}
+              </span>
+            )}
           </h4>
-          <PipelineFlow activeStage={activeStage} finalLabel={result?.label ?? null} />
+          <PipelineFlow
+            activeStage={activeStage}
+            finalLabel={result?.label ?? null}
+            mediaKind={mediaKind}
+          />
         </div>
 
         {/* Progress + result card */}
@@ -242,6 +306,23 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, onReset }) => {
                     ? "Download PDF Report"
                     : "PDF report disabled"}
                 </button>
+              </div>
+
+              {/* Metrics of this specific analysis (not the reference benchmark) */}
+              <div className="border-t border-slate-800 pt-3">
+                <SessionMetrics
+                  mediaKind={result.media_kind ?? mediaKind}
+                  sourceRef={result.source_ref ?? null}
+                  score={result.score}
+                  visualLikelihood={result.visual_likelihood ?? null}
+                  audioLikelihood={result.audio_likelihood ?? null}
+                  visualState={result.visual_state ?? null}
+                  audioState={result.audio_state ?? null}
+                  framesAnalyzed={result.frames_analyzed ?? null}
+                  facesIsolated={result.faces_isolated ?? null}
+                  modalitiesUsed={result.modalities_used ?? []}
+                  threshold={result.threshold ?? null}
+                />
               </div>
 
               {!reportEnabled && (

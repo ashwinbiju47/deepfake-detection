@@ -64,7 +64,7 @@ def test_pdf_report_failure_delivers_no_partial_pdf() -> None:
 
     with pytest.MonkeyPatch.context() as m:
         m.setattr("django.conf.settings.REPORT_ENABLED", True)
-        with patch("detection.services.report.ReportGenerator._build_pdf", side_effect=RuntimeError("ReportLab crashed")):
+        with patch("detection.services.report.ReportGenerator._build_html", side_effect=RuntimeError("ReportLab crashed")):
             res = ReportGenerator.generate(str(session.id))
 
             assert res.success is False

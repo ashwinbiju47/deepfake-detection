@@ -6,26 +6,45 @@ This module implements the design's ``Report_Generator`` interface:
 
 Design intent (design.md -> Components and Interfaces -> Report_Generator):
 * Generate a downloadable PDF report summarizing score, label, modality
-  findings, and XAI heatmaps (Requirement 12.1).
+  findings, and XAI artifacts (Requirement 12.1).
 * The report includes the **system architecture / detection pipeline diagram**
   (Video -> Frame extraction -> Face detection/preprocessing -> Visual model ->
   Audio extraction -> Audio model -> Multimodal fusion -> Fake probability ->
   XAI explanation -> Final result).
 * Results chapter: a **model performance table** (Model | Accuracy | Precision
   | Recall | F1 | ROC-AUC) demonstrating Multimodal > Visual-only > Audio-only,
-  plus the **cross-dataset generalization** table (trained on one dataset,
-  tested on unseen identities from another).
-* The **ORIGINAL / Grad-CAM heatmap / OVERLAY triple** for each analyzed frame.
+  plus the **cross-dataset generalization** table.
+* The **ORIGINAL / Grad-CAM heatmap / OVERLAY triple** for analyzed frames
+  (and the spectrogram triple for audio-only sessions).
 * Refuse incomplete sessions (QUEUED / PROCESSING) with clear guidance (Requirement 12.4).
 * On failure, return failure message without serving partial PDF (Requirement 12.5).
+
+Rendering pipeline
+------------------
+The report is authored as a single **semantic HTML document** (one <section>
+per chapter) and converted to PDF with **WeasyPrint**. HTML/CSS layout is
+flow-based, so unlike absolutely-positioned canvas drawing the text and
+figures can never overlap: each section starts on a fresh page
+(``break-before: page``), figures are block-level images that push content
+down instead of being stamped at fixed coordinates, and long tables split
+cleanly across pages with repeating headers.
+
+WeasyPrint needs the system Pango/GLib libraries. On Debian/Ubuntu (the
+deployment image) they are apt packages; on macOS dev machines they come from
+Homebrew and the dynamic loader may need a hint — :func:`_ensure_weasyprint`
+handles both, including the Windows-style DLL directory search.
 """
 
 from __future__ import annotations
 
+import base64
+import html
 import io
 import logging
+import os
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import List, Optional, Sequence
 from django.conf import settings
 from django.utils import timezone
 
@@ -37,12 +56,120 @@ from detection.services.benchmark import (
     MODALITY_COMPARISON,
     MODALITY_ORDERING,
     VARIANT_LABEL,
-    BenchmarkRow,
     modality_comparison_table,
 )
 from detection.services.figures import figures_png
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# WeasyPrint bootstrap (system-library tolerant)
+# ---------------------------------------------------------------------------
+
+
+def _ensure_weasyprint():
+    """Import and return the WeasyPrint module, hinting the loader if needed.
+
+    WeasyPrint relies on Pango/GLib shared libraries, located by *soname*
+    (``gobject-2.0-0`` etc.). On Linux servers (the deployment image) the apt
+    packages put those on the default loader path and a plain import works. On
+    macOS dev machines Homebrew keeps the libraries under versioned Cellar
+    paths the soname search misses; on Windows they live in the GTK runtime
+    directory.
+
+    Import order:
+
+    1. Plain import (works on Linux and configured systems).
+    2. If the import fails with a library-load error, patch cffi's
+       ``FFI.dlopen`` to retry failed sonames against concrete library files
+       found in common directories (Homebrew, GTK runtime, or directories
+       listed in ``WEASYPRINT_DLL_DIRECTORIES``), then import again.
+    """
+    try:
+        import weasyprint  # noqa: PLC0415
+
+        return weasyprint
+    except OSError:
+        pass
+
+    # Candidate directories that may hold the GLib/Pango libraries.
+    candidate_dirs: List[str] = []
+    env_path = os.environ.get("WEASYPRINT_DLL_DIRECTORIES")
+    if env_path:
+        candidate_dirs.extend(p for p in env_path.split(os.pathsep) if p)
+    # Homebrew (Apple Silicon + Intel), incl. versioned opt paths, and Windows.
+    for base in (
+        "/opt/homebrew/lib",
+        "/usr/local/lib",
+        "/opt/homebrew/opt/glib/lib",
+        "/opt/homebrew/opt/pango/lib",
+    ):
+        if os.path.isdir(base):
+            candidate_dirs.append(base)
+    if os.name == "nt":
+        for pattern in (
+            r"C:\Program Files\GTK3-Runtime Win64\bin",
+            r"C:\Program Files (x86)\GTK3-Runtime Win64\bin",
+        ):
+            if os.path.isdir(pattern):
+                candidate_dirs.append(pattern)
+
+    # Concrete library files that satisfy each missing soname, per platform.
+    dylib_suffix = ".dylib" if os.name == "posix" and os.uname().sysname == "Darwin" else ".so"
+    soname_files: List[str] = [
+        "libglib-2.0" + dylib_suffix + ".0" if os.name != "nt" else "libglib-2.0-0.dll",
+        "libgobject-2.0" + dylib_suffix + ".0" if os.name != "nt" else "libgobject-2.0-0.dll",
+        "libpango-1.0" + dylib_suffix + ".0" if os.name != "nt" else "libpango-1.0-0.dll",
+        "libpangoft2-1.0" + dylib_suffix + ".0" if os.name != "nt" else "libpangoft2-1.0-0.dll",
+        "libharfbuzz" + dylib_suffix + ".0" if os.name != "nt" else "libharfbuzz-0.dll",
+        "libfontconfig" + dylib_suffix + ".1" if os.name != "nt" else "libfontconfig-1.dll",
+    ]
+
+    def _find_library_file(soname: str) -> Optional[str]:
+        """Find a concrete file in the candidate dirs matching a soname family."""
+        family = soname.split("-")[0] + "-" + soname.split("-")[1] if "-" in soname else soname
+        for directory in candidate_dirs:
+            try:
+                entries = sorted(os.listdir(directory))
+            except OSError:  # pragma: no cover - unreadable dir
+                continue
+            for entry in entries:
+                if soname in entry or (family in entry and (entry.endswith(dylib_suffix) or entry.endswith(".dll"))):
+                    path = os.path.join(directory, entry)
+                    if os.path.isfile(path) and not os.path.islink(path):
+                        return path
+            # Fall back to symlinks too (Homebrew opt dirs).
+            for entry in entries:
+                if soname in entry:
+                    path = os.path.join(directory, entry)
+                    if os.path.isfile(path):
+                        return path
+        return None
+
+    import cffi.api as _cffi_api  # noqa: PLC0415
+
+    if not getattr(_cffi_api.FFI.dlopen, "_freebuff_fallback", False):
+        _orig_dlopen = _cffi_api.FFI.dlopen
+
+        def _dlopen_with_fallback(self, libname, flags=0):  # type: ignore[no-untyped-def]
+            try:
+                return _orig_dlopen(self, libname, flags)
+            except OSError:
+                if not libname:
+                    raise
+                name_str = str(libname)
+                fallback = _find_library_file(name_str)
+                if fallback:
+                    return _orig_dlopen(self, fallback, flags)
+                raise
+
+        _dlopen_with_fallback._freebuff_fallback = True  # type: ignore[attr-defined]
+        _cffi_api.FFI.dlopen = _dlopen_with_fallback
+
+    import weasyprint  # noqa: PLC0415  (retry with the dlopen fallback active)
+
+    return weasyprint
 
 
 @dataclass(frozen=True)
@@ -58,7 +185,7 @@ class ReportOutcome:
 # ---------------------------------------------------------------------------
 
 # The end-to-end pipeline shown in the architecture diagram (Results chapter).
-PIPELINE_STAGES: Tuple[str, ...] = (
+PIPELINE_STAGES: Sequence[str] = (
     "Video",
     "Frame extraction",
     "Face detection / preprocessing",
@@ -70,6 +197,181 @@ PIPELINE_STAGES: Tuple[str, ...] = (
     "XAI explanation",
     "Final result",
 )
+
+# Stages that belong to each modality branch, used to grey out the branches
+# that did not run for image/audio inputs.
+_VISUAL_STAGES = frozenset(("Frame extraction", "Face detection / preprocessing", "Visual model"))
+_AUDIO_STAGES = frozenset(("Audio extraction", "Audio model"))
+
+_CSS = """
+@page {
+    size: A4;
+    margin: 20mm 16mm 18mm 16mm;
+    @bottom-right {
+        content: "Page " counter(page) " of " counter(pages);
+        font-family: Helvetica, Arial, sans-serif;
+        font-size: 8pt;
+        color: #64748b;
+    }
+    @bottom-left {
+        content: "Real-Time Deepfake Detection Platform — Analysis Report";
+        font-family: Helvetica, Arial, sans-serif;
+        font-size: 8pt;
+        color: #64748b;
+    }
+}
+* { box-sizing: border-box; }
+body {
+    font-family: Helvetica, Arial, sans-serif;
+    font-size: 10pt;
+    line-height: 1.45;
+    color: #1e293b;
+    margin: 0;
+}
+h1 {
+    font-size: 20pt;
+    color: #0c4a6e;
+    margin: 0 0 2pt 0;
+}
+h2 {
+    font-size: 14pt;
+    color: #0c4a6e;
+    border-bottom: 1.5pt solid #0c4a6e;
+    padding-bottom: 3pt;
+    margin: 0 0 10pt 0;
+}
+h3 { font-size: 11.5pt; color: #1e293b; margin: 12pt 0 6pt 0; }
+p  { margin: 0 0 7pt 0; }
+section.chapter { break-before: page; }
+section.chapter:first-of-type { break-before: auto; }
+.meta {
+    font-size: 8.5pt;
+    color: #475569;
+    margin-bottom: 14pt;
+}
+.meta table { border-collapse: collapse; }
+.meta td { padding: 1pt 10pt 1pt 0; font-size: 8.5pt; color: #475569; }
+.meta td.k { font-weight: bold; color: #334155; }
+table.data {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 6pt 0 10pt 0;
+    font-size: 9pt;
+}
+table.data th {
+    background: #0c4a6e;
+    color: #ffffff;
+    text-align: left;
+    padding: 5pt 7pt;
+    font-size: 8.5pt;
+    text-transform: uppercase;
+    letter-spacing: 0.4pt;
+}
+table.data td { padding: 5pt 7pt; border-bottom: 0.5pt solid #cbd5e1; }
+table.data tr:nth-child(even) td { background: #f1f5f9; }
+table.data td.num, table.data th.num { text-align: right; }
+table.data tr.best td { background: #e0f2fe; font-weight: bold; }
+.badge {
+    display: inline-block;
+    padding: 1.5pt 6pt;
+    border-radius: 6pt;
+    font-size: 7.5pt;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 0.4pt;
+    vertical-align: middle;
+}
+.badge.best { background: #0c4a6e; color: #fff; }
+.verdict {
+    border: 1pt solid #cbd5e1;
+    border-left: 5pt solid #0c4a6e;
+    background: #f8fafc;
+    padding: 10pt 14pt;
+    margin: 10pt 0;
+}
+.verdict .label {
+    font-size: 17pt;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+.verdict .label.deepfake { color: #b91c1c; }
+.verdict .label.authentic { color: #047857; }
+.verdict .label.inconclusive { color: #64748b; }
+.verdict .score { font-size: 17pt; font-weight: bold; color: #0c4a6e; }
+.callout {
+    background: #eef2ff;
+    border: 1pt solid #c7d2fe;
+    border-radius: 4pt;
+    padding: 9pt 12pt;
+    margin: 8pt 0;
+    font-size: 9pt;
+}
+.callout b { color: #3730a3; }
+figure { margin: 8pt 0 12pt 0; text-align: center; break-inside: avoid; }
+figure img { max-width: 100%; }
+figcaption {
+    font-size: 8pt;
+    color: #64748b;
+    margin-top: 3pt;
+    font-style: italic;
+}
+/* Pipeline flow diagram: a vertical chain of labelled boxes with arrows.
+   Kept compact (smaller boxes, tight arrows) so the whole 10-stage chain +
+   the classification block always fit on the cover page. */
+.flow { margin: 4pt 0 0 0; }
+.flow .stage {
+    display: inline-block;
+    border: 1pt solid #94a3b8;
+    background: #eff6ff;
+    border-radius: 3pt;
+    padding: 2.5pt 8pt;
+    width: 46%;
+    font-size: 8.5pt;
+    font-weight: bold;
+    color: #0c4a6e;
+}
+.flow .stage .tag { float: right; font-weight: normal; }
+.flow .stage.branch-visual { background: #e0f2fe; border-color: #38bdf8; }
+.flow .stage.branch-audio  { background: #fae8ff; border-color: #d946ef; }
+.flow .stage.skipped {
+    background: #f8fafc;
+    border-color: #e2e8f0;
+    color: #94a3b8;
+    font-weight: normal;
+    text-decoration: line-through;
+}
+.flow .arrow {
+    display: block;
+    width: 46%;
+    text-align: center;
+    color: #64748b;
+    font-size: 7.5pt;
+    line-height: 1.0;
+    padding: 0;
+    margin: 0;
+}
+.flow .row { display: flex; align-items: center; }
+.flow .tag {
+    margin-left: 6pt;
+    font-size: 7.5pt;
+    color: #64748b;
+    font-weight: normal;
+}
+/* XAI triple grid */
+table.xai { width: 100%; border-collapse: collapse; margin-top: 6pt; }
+table.xai td { text-align: center; padding: 3pt; }
+table.xai img { width: 100%; max-width: 150pt; border: 0.5pt solid #cbd5e1; }
+table.xai .cap {
+    font-size: 7.5pt;
+    font-weight: bold;
+    color: #475569;
+    text-transform: uppercase;
+    letter-spacing: 0.4pt;
+}
+ul.glossary { margin: 4pt 0 8pt 0; padding-left: 14pt; }
+ul.glossary li { margin-bottom: 4pt; font-size: 9pt; }
+.note { font-size: 8.5pt; color: #64748b; font-style: italic; }
+"""
 
 
 class ReportGenerator:
@@ -113,7 +415,8 @@ class ReportGenerator:
             )
 
         try:
-            pdf_bytes = ReportGenerator._build_pdf(session)
+            html_doc = ReportGenerator._build_html(session)
+            pdf_bytes = ReportGenerator._html_to_pdf(html_doc)
 
             Report.objects.update_or_create(
                 session=session,
@@ -145,616 +448,393 @@ class ReportGenerator:
             )
 
     # ------------------------------------------------------------------
-    # PDF assembly
+    # HTML assembly — one <section class="chapter"> per PDF page
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_pdf(session: AnalysisSession) -> bytes:
-        """Build the full PDF report with reportlab (or minimal fallback)."""
-        try:
-            from reportlab.lib.pagesizes import letter  # type: ignore  # noqa: PLC0415
-            from reportlab.pdfgen import canvas  # type: ignore  # noqa: PLC0415
-        except ImportError:
-            return ReportGenerator._fallback_pdf(session)
-
-        buffer = io.BytesIO()
-        p = canvas.Canvas(buffer, pagesize=letter)
-
-        ReportGenerator._draw_header(p, session)
-        ReportGenerator._draw_pipeline_diagram(p)
-        ReportGenerator._draw_classification(p, session)
-        p.showPage()
-
-        ReportGenerator._draw_results_chapter(p)
-        p.showPage()
-
-        ReportGenerator._draw_confusion_matrix_chapter(p)
-        p.showPage()
-
-        ReportGenerator._draw_curves_chapter(p)
-        p.showPage()
-
-        ReportGenerator._draw_ablation_chapter(p)
-        p.showPage()
-
-        ReportGenerator._draw_xai_section(p, session)
-        p.showPage()
-
-        p.save()
-        return buffer.getvalue()
-
-    # -- Page 1: header + architecture diagram + classification -------------
+    def _build_html(session: AnalysisSession) -> str:
+        sections: List[str] = [
+            ReportGenerator._section_cover(session),
+            ReportGenerator._section_results(session),
+            ReportGenerator._section_confusion(),
+            ReportGenerator._section_curves(),
+            ReportGenerator._section_ablation(),
+            ReportGenerator._section_xai(session),
+        ]
+        return (
+            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            f"<style>{_CSS}</style></head><body>"
+            + "".join(sections)
+            + "</body></html>"
+        )
 
     @staticmethod
-    def _draw_header(p: "canvas.Canvas", session: AnalysisSession) -> None:
-        """Draw the report title block and session metadata."""
-        p.setFillColorRGB(0.08, 0.10, 0.16)
-        p.rect(0, 750, 612, 42, stroke=0, fill=1)
-        p.setFillColorRGB(1, 1, 1)
-        p.setFont("Helvetica-Bold", 16)
-        p.drawString(40, 768, "Real-Time Deepfake Detection Platform — Report")
-        p.setFont("Helvetica", 9)
-        p.drawString(40, 754, f"Session {session.id}  •  {session.status}  •  generated {timezone.now():%Y-%m-%d %H:%M UTC}")
-
-        p.setFillColorRGB(0.1, 0.1, 0.1)
-        p.setFont("Helvetica", 9)
-        y = 726
-        p.drawString(40, y, f"Source: {session.source_ref}  ({session.source_type})")
-        p.drawString(40, y - 14, f"Created: {session.created_at:%Y-%m-%d %H:%M UTC}")
-        if session.completed_at:
-            p.drawString(40, y - 28, f"Completed: {session.completed_at:%Y-%m-%d %H:%M UTC}")
+    def _esc(value: object) -> str:
+        return html.escape(str(value), quote=True)
 
     @staticmethod
-    def _box(
-        p: "canvas.Canvas", x: float, y: float, w: float, h: float, lines: Sequence[str]
-    ) -> None:
-        """Draw a rounded pipeline box with centered multi-line text."""
-        p.setLineWidth(0.8)
-        p.setStrokeColorRGB(0.18, 0.22, 0.32)
-        p.setFillColorRGB(0.90, 0.93, 0.98)
-        p.roundRect(x, y, w, h, 5, stroke=1, fill=1)
-        p.setFillColorRGB(0.08, 0.10, 0.18)
-        p.setFont("Helvetica", 7.5)
-        n = len(lines)
-        for i, line in enumerate(lines):
-            p.drawCentredString(x + w / 2.0, y + h / 2.0 + (n / 2.0 - i - 0.5) * 8.5, line)
+    def _pct(value: Optional[float], digits: int = 1) -> str:
+        if value is None:
+            return "—"
+        return f"{value * 100:.{digits}f}%"
+
+    # -- Page 1: cover, architecture flow, classification -------------------
 
     @staticmethod
-    def _arrow(p: "canvas.Canvas", x1: float, y1: float, x2: float, y2: float) -> None:
-        """Draw an arrow between two box edges."""
-        import math  # noqa: PLC0415
+    def _section_cover(session: AnalysisSession) -> str:
+        visual = getattr(session, "visual_result", None)
+        audio = getattr(session, "audio_result", None)
+        fusion = getattr(session, "fusion_result", None)
 
-        p.setLineWidth(1.0)
-        p.setStrokeColorRGB(0.2, 0.3, 0.6)
-        p.line(x1, y1, x2, y2)
-        angle = math.atan2(y2 - y1, x2 - x1)
-        size = 6
-        p.setFillColorRGB(0.2, 0.3, 0.6)
-        path = p.beginPath()
-        path.moveTo(x2, y2)
-        path.lineTo(x2 - size * math.cos(angle - 0.4), y2 - size * math.sin(angle - 0.4))
-        path.lineTo(x2 - size * math.cos(angle + 0.4), y2 - size * math.sin(angle + 0.4))
-        path.close()
-        p.drawPath(path, stroke=0, fill=1)
+        media_kind = session.media_kind or "video"
+        kind_line = {
+            "video": "video input — full multimodal pipeline (visual + audio + fusion)",
+            "image": "image input — visual branch only (no audio analysis)",
+            "audio": "audio input — audio branch only (no visual analysis)",
+        }.get(media_kind, f"{media_kind} input")
 
-    @staticmethod
-    def _draw_pipeline_diagram(p: "canvas.Canvas") -> None:
-        """Draw the end-to-end detection pipeline (architecture) diagram."""
-        p.setFillColorRGB(0.1, 0.1, 0.15)
-        p.setFont("Helvetica-Bold", 13)
-        p.drawString(40, 700, "1. System Architecture — Detection Pipeline")
-        p.setFont("Helvetica", 8.5)
-        p.drawString(40, 686, "Figure 1: End-to-end multimodal deepfake detection pipeline.")
+        label_text = str(fusion.label).upper() if fusion and fusion.label else "INCONCLUSIVE"
+        label_class = (fusion.label if fusion and fusion.label else "inconclusive")
+        score_text = ReportGenerator._pct(fusion.score) if fusion and fusion.score is not None else "N/A"
 
-        bw, bh, gap = 115, 38, 20
-        x0 = 40
-        row1_y, row2_y, row3_y = 640, 552, 464
+        flow_rows: List[str] = []
+        for stage in PIPELINE_STAGES:
+            # frozenset membership: PIPELINE_STAGES entries are plain strings.
+            if stage in _VISUAL_STAGES and media_kind == "audio":
+                css, note = "stage branch-visual skipped", "not run (audio input)"
+            elif stage in _AUDIO_STAGES and media_kind == "image":
+                css, note = "stage branch-audio skipped", "not run (image input)"
+            elif stage in _VISUAL_STAGES:
+                css, note = "stage branch-visual", "visual branch"
+            elif stage in _AUDIO_STAGES:
+                css, note = "stage branch-audio", "audio branch"
+            else:
+                css, note = "stage", ""
+            note_html = f"<span class='tag'>{note}</span>" if note else ""
+            flow_rows.append(f"<span class='{css}'>{ReportGenerator._esc(stage)}{note_html}</span>")
+            flow_rows.append("<span class='arrow'>▼</span>")
+        # Drop the trailing arrow after the last stage.
+        if flow_rows and flow_rows[-1].startswith("<span class='arrow'"):
+            flow_rows.pop()
+        flow_html = "".join(flow_rows)
 
-        # Row 1 (left -> right): stages 1-4
-        x = x0
-        pos = {}
-        for i in range(4):
-            label = PIPELINE_STAGES[i]
-            lines = [label] if len(label) <= 22 else label.split("/")
-            pos[i + 1] = (x, row1_y)
-            self = ReportGenerator
-            self._box(p, x, row1_y, bw, bh, lines)
-            x += bw + gap
+        evidence_rows = ""
+        if visual:
+            evidence_rows += (
+                "<tr><td>Visual</td>"
+                f"<td class='num'>{ReportGenerator._pct(visual.aggregate_likelihood)}</td>"
+                f"<td>{ReportGenerator._esc(visual.state or '—')}</td>"
+                f"<td class='num'>{visual.frames_analyzed}</td>"
+                f"<td class='num'>{visual.faces_isolated}</td></tr>"
+            )
+        if audio:
+            evidence_rows += (
+                "<tr><td>Audio</td>"
+                f"<td class='num'>{ReportGenerator._pct(audio.likelihood)}</td>"
+                f"<td>{ReportGenerator._esc(audio.state or '—')}</td>"
+                "<td class='num'>—</td><td class='num'>—</td></tr>"
+            )
+        modalities = (fusion.modalities_used.split(",") if fusion and fusion.modalities_used else [])
+        created_str = f"{session.created_at:%Y-%m-%d %H:%M UTC}" if session.created_at else "—"
+        completed_str = f"{session.completed_at:%Y-%m-%d %H:%M UTC}" if session.completed_at else "—"
 
-        # Row 2 (right -> left): stages 5-8
-        x = x0 + 3 * (bw + gap)
-        for i in range(7, 3, -1):
-            label = PIPELINE_STAGES[i]
-            lines = [label] if len(label) <= 22 else label.split("/")
-            pos[i + 1] = (x, row2_y)
-            ReportGenerator._box(p, x, row2_y, bw, bh, lines)
-            x -= bw + gap
+        return f"""
+<section class="chapter">
+  <h1>Real-Time Deepfake Detection Platform</h1>
+  <p class="meta" style="font-size:10pt;color:#0c4a6e;font-weight:bold;">Analysis Report</p>
+  <table class="meta">
+    <tr><td class="k">Session</td><td>{ReportGenerator._esc(session.id)}</td>
+        <td class="k">Status</td><td>{ReportGenerator._esc(session.status)}</td></tr>
+    <tr><td class="k">Source file</td><td>{ReportGenerator._esc(session.source_ref)}</td>
+        <td class="k">Input type</td><td>{ReportGenerator._esc(kind_line)}</td></tr>
+    <tr><td class="k">Created</td><td>{ReportGenerator._esc(created_str)}</td>
+        <td class="k">Completed</td><td>{ReportGenerator._esc(completed_str)}</td></tr>
+  </table>
 
-        # Row 3 (left -> right): stages 9-10
-        x = x0
-        for i in range(8, 10):
-            label = PIPELINE_STAGES[i]
-            lines = [label] if len(label) <= 22 else label.split("/")
-            pos[i + 1] = (x, row3_y)
-            ReportGenerator._box(p, x, row3_y, bw, bh, lines)
-            x += bw + gap
+  <h2>1. Classification Result</h2>
+  <div class="verdict">
+    <span class="label {label_class}">{ReportGenerator._esc(label_text)}</span>
+    &nbsp;&nbsp;·&nbsp;&nbsp; Deepfake probability <span class="score">{score_text}</span>
+  </div>
+  <table class="data">
+    <thead><tr><th>Evidence</th><th class="num">Likelihood</th><th>Pipeline state</th>
+        <th class="num">Frames</th><th class="num">Faces</th></tr></thead>
+    <tbody>{evidence_rows or '<tr><td colspan="5">No per-modality evidence recorded.</td></tr>'}</tbody>
+  </table>
+  <p class="note">Decision: label {ReportGenerator._esc(label_text.lower())} because the fused
+  score is {'below' if fusion and fusion.score is not None and fusion.score < fusion.threshold_used else 'at or above'} the
+  threshold {ReportGenerator._pct(fusion.threshold_used, 2) if fusion else '0.50'}.
+  Modalities used: {ReportGenerator._esc(', '.join(modalities)) if modalities else 'none'}.
+  Fusion weights: visual {getattr(settings, 'FUSION_WEIGHT_VISUAL', 0.6):.2f} / audio {getattr(settings, 'FUSION_WEIGHT_AUDIO', 0.4):.2f}.</p>
 
-        # Arrows
-        def _edge(box_index: int) -> Tuple[float, float, float, float]:
-            bx, by = pos[box_index]
-            return (bx, by, bx + bw, by + bh)
-
-        # row 1 horizontal
-        for i in range(1, 4):
-            x1, y1, x2, _ = _edge(i)
-            ReportGenerator._arrow(p, x1 + bw, y1 + bh / 2, x2, y1 + bh / 2)
-        # drop 4 -> 5
-        x1, y1, x2, y2 = _edge(4)
-        ReportGenerator._arrow(p, x1 + bw / 2, y1, x1 + bw / 2, y2 - bh - (row1_y - row2_y - bh))
-        # row 2 horizontal (right to left)
-        for i in range(6, 4, -1):
-            x1, y1, x2, _ = _edge(i)
-            ReportGenerator._arrow(p, x1, y1 + bh / 2, x2 + bw, y1 + bh / 2)
-        # drop 8 -> 9
-        x1, y1, x2, y2 = _edge(8)
-        ReportGenerator._arrow(p, x1 + bw / 2, y1, x1 + bw / 2, y2 - bh - (row2_y - row3_y - bh))
-        # row 3 horizontal 9 -> 10
-        x1, y1, x2, _ = _edge(9)
-        ReportGenerator._arrow(p, x1 + bw, y1 + bh / 2, x2, y1 + bh / 2)
-
-        p.setFillColorRGB(0.25, 0.25, 0.30)
-        p.setFont("Helvetica-Oblique", 8)
-        p.drawString(40, row3_y - 22, "Visual content (faces) and audio (spectrograms) are analyzed in parallel and fused "
-                                      "into a final deepfake probability, then explained via Grad-CAM and delivered as the result.")
-
-    @staticmethod
-    def _draw_classification(p: "canvas.Canvas", session: AnalysisSession) -> None:
-        p.setFillColorRGB(0.1, 0.1, 0.15)
-        p.setFont("Helvetica-Bold", 13)
-        p.drawString(40, 396, "2. Classification Result")
-
-        try:
-            fusion = session.fusion_result
-        except Exception:  # noqa: BLE001 - OneToOne missing related object
-            fusion = None
-
-        if fusion is None:
-            p.setFont("Helvetica", 9)
-            p.drawString(40, 370, "No fusion result recorded for this session.")
-            return
-
-        p.setFillColorRGB(0.93, 0.96, 1.0)
-        p.roundRect(40, 300, 532, 62, 6, stroke=1, fill=1)
-        p.setFillColorRGB(0.10, 0.10, 0.16)
-        p.setFont("Helvetica-Bold", 11)
-        label_text = str(fusion.label).upper() if fusion.label else "INCONCLUSIVE"
-        p.drawString(58, 330, f"Label: {label_text}")
-        p.drawString(400, 330, f"Score: {fusion.score:.2%}" if fusion.score is not None else "Score: N/A")
-        p.setFont("Helvetica", 8.5)
-        p.drawString(58, 312, f"Modalities used: {fusion.modalities_used or 'none'}")
-        p.drawString(400, 312, f"Threshold: {fusion.threshold_used:.2f}")
+  <h2>2. System Architecture — Detection Pipeline</h2>
+  <p>Figure 1: the end-to-end pipeline. Stages not applicable to this input type
+  are shown struck-through; the executed path is highlighted.</p>
+  <div class="flow">{flow_html}</div>
+</section>
+"""
 
     # -- Page 2: Results / Evaluation chapter -------------------------------
 
     @staticmethod
-    def _draw_results_chapter(p: "canvas.Canvas") -> None:
-        """Draw the model-performance and cross-dataset tables (Results chapter)."""
-        p.setFillColorRGB(0.1, 0.1, 0.15)
-        p.setFont("Helvetica-Bold", 13)
-        p.drawString(40, 760, "3. Results / Evaluation")
+    def _section_results(session: AnalysisSession) -> str:
+        table = modality_comparison_table()
 
-        ReportGenerator._draw_metrics_table(p, y=700)
-        ReportGenerator._draw_cross_dataset_table(p, y=430)
-        ReportGenerator._draw_improvement_note(p, y=388)
+        rows_html = ""
+        for row in table["table"]:
+            variant = str(row["variant"])
+            best = variant == "multimodal"
+            best_badge = "<span class='badge best'>best</span>" if best else ""
+            rows_html += (
+                f"<tr class='{'best' if best else ''}'>"
+                f"<td>{ReportGenerator._esc(ReportGenerator.LABEL_BY_VARIANT[variant])} {best_badge}</td>"
+                f"<td class='num'>{row['accuracy_pct']:.1f}%</td>"
+                f"<td class='num'>{row['precision_pct']:.1f}%</td>"
+                f"<td class='num'>{row['recall_pct']:.1f}%</td>"
+                f"<td class='num'>{row['f1_pct']:.1f}%</td>"
+                f"<td class='num'>{row['roc_auc_pct']:.1f}%</td></tr>"
+            )
 
-    @staticmethod
-    def _draw_metrics_table(p: "canvas.Canvas", y: float) -> None:
-        """Draw Model | Accuracy | Precision | Recall | F1 | ROC-AUC table."""
-        p.setFillColorRGB(0.1, 0.1, 0.15)
-        p.setFont("Helvetica-Bold", 11)
-        p.drawString(40, y, "3.1 Model performance by modality (FaceForensics++ held-out test)")
-
-        headers = ["Model", "Accuracy", "Precision", "Recall", "F1", "ROC-AUC"]
-        col_widths = [140, 78, 78, 68, 68, 78]
-        x0, y0 = 40, y - 24
-        row_h = 20
-
-        def _cell(x: float, yy: float, text: str, bold: bool = False, align: str = "left") -> None:
-            p.setFont("Helvetica-Bold" if bold else "Helvetica", 8.5)
-            if align == "right":
-                p.drawRightString(x + w - 8, yy + 6, text)
-            else:
-                p.drawString(x + 8, yy + 6, text)
-
-        # header
-        p.setFillColorRGB(0.12, 0.16, 0.26)
-        p.rect(x0, y0, sum(col_widths), row_h, stroke=0, fill=1)
-        p.setFillColorRGB(1, 1, 1)
-        cx = x0
-        for h, w in zip(headers, col_widths):
-            p.setFont("Helvetica-Bold", 8.5)
-            p.drawString(cx + 8, y0 + 6, h)
-            cx += w
-
-        by_variant = {r.variant: r for r in MODALITY_COMPARISON}
-        yy = y0 - row_h
-        for variant in MODALITY_ORDERING:
-            row = by_variant[variant]
-            cm = row.cm
-            is_best = variant == "multimodal"
-            p.setFillColorRGB(0.93, 0.97, 1.0) if is_best else p.setFillColorRGB(1, 1, 1)
-            p.rect(x0, yy, sum(col_widths), row_h, stroke=0, fill=1)
-            p.setStrokeColorRGB(0.8, 0.85, 0.92)
-            p.rect(x0 + 0.5, yy + 0.5, sum(col_widths) - 1, row_h - 1, stroke=1, fill=0)
-            p.setFillColorRGB(0.1, 0.1, 0.15)
-            cells = [
-                (ReportGenerator.LABEL_BY_VARIANT[variant], "left", True if is_best else False),
-                (f"{cm.accuracy*100:.1f}%", "right", False),
-                (f"{cm.precision*100:.1f}%", "right", False),
-                (f"{cm.recall*100:.1f}%", "right", False),
-                (f"{cm.f1_score*100:.1f}%", "right", False),
-                (f"{row.roc_auc*100:.1f}%", "right", False),
-            ]
-            cx = x0
-            for (text, align, bold), w in zip(cells, col_widths):
-                p.setFont("Helvetica-Bold" if bold else "Helvetica", 8.5)
-                if align == "right":
-                    p.drawRightString(cx + w - 8, yy + 6, text)
-                else:
-                    p.drawString(cx + 8, yy + 6, text)
-                cx += w
-            yy -= row_h
-
-        p.setFillColorRGB(0.15, 0.15, 0.2)
-        p.setFont("Helvetica-Oblique", 8)
-        p.drawString(x0, yy - 14, "Best configuration highlighted. Multimodal fusion combines visual and audio likelihoods (60/40 weighted).")
-
-    @staticmethod
-    def _draw_cross_dataset_table(p: "canvas.Canvas", y: float) -> None:
-        """Draw train-on-A / test-on-B generalization table (accuracy by variant)."""
-        p.setFillColorRGB(0.1, 0.1, 0.15)
-        p.setFont("Helvetica-Bold", 11)
-        p.drawString(40, y, "3.2 Cross-dataset generalization (trained on one dataset, tested on unseen identities)")
-
-        headers = ["Train → Test", "Multimodal", "Visual-only", "Audio-only"]
-        col_widths = [150, 130, 120, 120]
-        x0, y0 = 40, y - 24
-        row_h = 20
-
-        p.setFillColorRGB(0.12, 0.16, 0.26)
-        p.rect(x0, y0, sum(col_widths), row_h, stroke=0, fill=1)
-        p.setFillColorRGB(1, 1, 1)
-        cx = x0
-        for h, w in zip(headers, col_widths):
-            p.setFont("Helvetica-Bold", 8.5)
-            p.drawString(cx + 8, y0 + 6, h)
-            cx += w
-
-        # group cross-dataset runs by (train, test) pair
-        by_pair: dict = {}
+        # Cross-dataset grouped rows.
+        by_pair = {}
         for row in CROSS_DATASET_RUNS:
             by_pair.setdefault((row.train_dataset, row.dataset), {})[row.variant] = row
-
-        yy = y0 - row_h
+        cross_rows = ""
         for (train_ds, test_ds), runs in by_pair.items():
-            p.setFillColorRGB(1, 1, 1)
-            p.rect(x0, yy, sum(col_widths), row_h, stroke=0, fill=1)
-            p.setStrokeColorRGB(0.8, 0.85, 0.92)
-            p.rect(x0 + 0.5, yy + 0.5, sum(col_widths) - 1, row_h - 1, stroke=1, fill=0)
-            p.setFillColorRGB(0.1, 0.1, 0.15)
-            p.setFont("Helvetica", 8.5)
-            p.drawString(x0 + 8, yy + 6, f"{train_ds} → {test_ds}")
-            cx = x0 + col_widths[0]
-            for variant in ("multimodal", "visual_only", "audio_only"):
-                row = runs.get(variant)
-                acc = row.cm.accuracy if row else 0.0
-                p.setFont("Helvetica-Bold" if variant == "multimodal" else "Helvetica", 8.5)
-                w = col_widths[1]
-                p.drawRightString(cx + w - 8, yy + 6, f"{acc*100:.1f}%")
-                cx += w
-            yy -= row_h
+            acc = {
+                v: (runs[v].cm.accuracy if v in runs else None)
+                for v in ("multimodal", "visual_only", "audio_only")
+            }
+            best_cell = f"<b>{acc['multimodal'] * 100:.1f}%</b>" if acc["multimodal"] else "—"
+            cross_rows += (
+                f"<tr><td>{ReportGenerator._esc(train_ds)} → {ReportGenerator._esc(test_ds)}</td>"
+                f"<td class='num'>{best_cell}</td>"
+                f"<td class='num'>{ReportGenerator._pct(acc['visual_only'])}</td>"
+                f"<td class='num'>{ReportGenerator._pct(acc['audio_only'])}</td></tr>"
+            )
 
-        p.setFillColorRGB(0.15, 0.15, 0.2)
-        p.setFont("Helvetica-Oblique", 8)
-        p.drawString(x0, yy - 14, "Cross-dataset scores are lower than in-domain scores — expected generalization drop — yet multimodal stays best in every setting.")
+        return f"""
+<section class="chapter">
+  <h2>3. Results / Evaluation</h2>
+
+  <h3>3.1 Model performance by modality (FaceForensics++ held-out test)</h3>
+  <table class="data">
+    <thead><tr><th>Model</th><th class="num">Accuracy</th><th class="num">Precision</th>
+        <th class="num">Recall</th><th class="num">F1</th><th class="num">ROC-AUC</th></tr></thead>
+    <tbody>{rows_html}</tbody>
+  </table>
+
+  <div class="callout">
+    <b>Does combining audio and visual information actually improve detection?</b><br>
+    Yes — multimodal fusion is <b>+{table['improvement_over_visual_pct']:.1f} pp</b> over
+    visual-only and <b>+{table['improvement_over_audio_pct']:.1f} pp</b> over audio-only:
+    Multimodal &gt; Visual-only &gt; Audio-only.
+  </div>
+
+  <h3>3.2 Cross-dataset generalization (unseen identities)</h3>
+  <p class="note">Training, validation and test splits use different identities/datasets, so
+  these numbers reflect generalization to unseen faces rather than memorized ones.</p>
+  <table class="data">
+    <thead><tr><th>Train → Test</th><th class="num">Multimodal</th>
+        <th class="num">Visual-only</th><th class="num">Audio-only</th></tr></thead>
+    <tbody>{cross_rows}</tbody>
+  </table>
+  <p class="note">Cross-dataset scores are lower than in-domain scores — the expected
+  generalization drop — yet multimodal stays best in every setting.</p>
+</section>
+"""
+
+    # -- Page 3: confusion matrices + error glossary ------------------------
 
     @staticmethod
-    def _draw_improvement_note(p: "canvas.Canvas", y: float) -> None:
-        """Answer the research question: does combining audio+visual improve detection?"""
-        table = modality_comparison_table()
-        imp_vis = table["improvement_over_visual_pct"]
-        imp_aud = table["improvement_over_audio_pct"]
-
-        p.setFillColorRGB(0.93, 0.96, 1.0)
-        p.roundRect(40, y, 532, 62, 6, stroke=1, fill=1)
-        p.setFillColorRGB(0.08, 0.10, 0.18)
-        p.setFont("Helvetica-Bold", 10)
-        p.drawString(58, y + 38, "Q: Does combining audio and visual information actually improve detection?")
-        p.setFont("Helvetica", 9)
-        p.drawString(58, y + 20, f"Yes. Multimodal accuracy is {imp_vis:+.1f} percentage points higher than visual-only "
-                                 f"and {imp_aud:+.1f} higher than audio-only:")
-        p.setFont("Helvetica-Bold", 9)
-        p.drawCentredString(306, y + 5, "Multimodal  >  Visual-only  >  Audio-only")
-
-    # -- Page 3: XAI section -------------------------------------------------
-
-    # -- Page 3: confusion matrices + what the errors mean --------------------
-
-    @staticmethod
-    def _draw_confusion_matrix_chapter(p: "canvas.Canvas") -> None:
-        """Draw the three confusion matrices annotated with error meanings."""
-        p.setFillColorRGB(0.1, 0.1, 0.15)
-        p.setFont("Helvetica-Bold", 13)
-        p.drawString(40, 760, "4. Confusion matrices and error analysis")
-        p.setFont("Helvetica", 8.5)
-        p.drawString(40, 744, "Per-modality confusion matrix on the held-out test split; every cell is labelled with its error type.")
-
-        cell_w, cell_h = 78, 46
-        gap_x = 46
-        x0 = 52
-        header_y = 700
-        for idx, variant in enumerate(MODALITY_ORDERING):
-            row = next(r for r in MODALITY_COMPARISON if r.variant == variant)
-            cm = row.cm
-            bx = x0 + idx * (2 * cell_w + gap_x)
-            p.setFillColorRGB(0.1, 0.1, 0.15)
-            p.setFont("Helvetica-Bold", 9.5)
-            p.drawString(bx, header_y, VARIANT_LABEL.get(variant, variant))
-            p.setFont("Helvetica", 8)
-            p.drawString(bx, header_y - 12, f"accuracy {cm.accuracy * 100:.1f}%")
-
-            top = header_y - 26
-            cells = [
-                ("TN", cm.tn, 0, 0), ("FP", cm.fp, 1, 0),
-                ("FN", cm.fn, 0, 1), ("TP", cm.tp, 1, 1),
-            ]
-            for label, value, col, row_i in cells:
-                cx = bx + col * cell_w
-                cy = top - (row_i + 1) * cell_h
-                shade = 0.90 - 0.18 * (1 if label == "TP" else 0)
-                p.setFillColorRGB(shade, shade + 0.03, 1.0 if label in ("TP", "TN") else 0.88)
-                p.setStrokeColorRGB(0.6, 0.66, 0.75)
-                p.rect(cx, cy, cell_w, cell_h, stroke=1, fill=1)
-                p.setFillColorRGB(0.1, 0.1, 0.16)
-                p.setFont("Helvetica-Bold", 10)
-                p.drawCentredString(cx + cell_w / 2, cy + cell_h / 2 + 6, label)
-                p.setFont("Helvetica", 11)
-                p.drawCentredString(cx + cell_w / 2, cy + cell_h / 2 - 8, str(value))
-
-            p.setFillColorRGB(0.35, 0.35, 0.4)
-            p.setFont("Helvetica", 7)
-            p.drawCentredString(bx + cell_w, top + 4, "predicted: authentic | deepfake")
-
-        # Error glossary (what each error means)
-        y = header_y - 26 - 2 * cell_h - 40
-        p.setFillColorRGB(0.93, 0.96, 1.0)
-        p.roundRect(40, y - 118, 532, 132, 6, stroke=1, fill=1)
-        p.setFillColorRGB(0.10, 0.12, 0.20)
-        p.setFont("Helvetica-Bold", 10)
-        p.drawString(54, y + 4, "What the errors mean")
-        p.setFont("Helvetica", 8)
-        lines = [
-            CONFUSION_MATRIX_GLOSSARY["TP"],
-            CONFUSION_MATRIX_GLOSSARY["TN"],
-            CONFUSION_MATRIX_GLOSSARY["FP"],
-            CONFUSION_MATRIX_GLOSSARY["FN"],
-            CONFUSION_MATRIX_GLOSSARY["precision"],
-            CONFUSION_MATRIX_GLOSSARY["recall"],
-        ]
-        ty = y - 12
-        for line in lines:
-            wrapped = ReportGenerator._wrap(line, 104)
-            for segment in wrapped:
-                p.drawString(54, ty, segment)
-                ty -= 10
-            ty -= 2
-
-        # Per-variant error counts, stated explicitly.
-        p.setFillColorRGB(0.1, 0.1, 0.15)
-        p.setFont("Helvetica-Bold", 9)
-        p.drawString(40, y - 140, "Per-modality error counts")
-        p.setFont("Helvetica", 8.5)
-        ty = y - 154
+    def _section_confusion() -> str:
+        cells = []
         for variant in MODALITY_ORDERING:
             row = next(r for r in MODALITY_COMPARISON if r.variant == variant)
-            p.drawString(52, ty, f"{VARIANT_LABEL[variant]}: {row.fp} false positive(s) and {row.fn} false negative(s).")
-            ty -= 14
-        p.setFont("Helvetica-Oblique", 8)
-        p.drawString(40, ty - 4, "A false negative (missed deepfake) is the costlier error for this application, which is why recall is reported alongside accuracy.")
+            cm = row.cm
+            cells.append(
+                "<td>"
+                f"<b>{ReportGenerator._esc(VARIANT_LABEL[variant])}</b><br>"
+                f"accuracy {cm.accuracy * 100:.1f}%<br>"
+                f"<span class='note'>{cm.fp} FP · {cm.fn} FN</span>"
+                "</td>"
+            )
+        matrices_png = figures_png().get("confusion_matrices")
 
-    @staticmethod
-    def _wrap(text: str, max_chars: int) -> List[str]:
-        """Greedy word wrap for reportlab text drawing."""
-        words = text.split()
-        lines: List[str] = []
-        current = ""
-        for word in words:
-            candidate = f"{current} {word}".strip()
-            if len(candidate) <= max_chars:
-                current = candidate
-            else:
-                if current:
-                    lines.append(current)
-                current = word
-        if current:
-            lines.append(current)
-        return lines
+        figure_html = ""
+        if matrices_png:
+            b64 = base64.b64encode(matrices_png).decode("ascii")
+            figure_html = (
+                "<figure><img src='data:image/png;base64," + b64 + "'/>"
+                "<figcaption>Figure 2: per-modality confusion matrices. FP = authentic "
+                "wrongly flagged as deepfake (false alarm); FN = deepfake missed.</figcaption></figure>"
+            )
 
-    # -- Page 4: ROC / PR curves -------------------------------------------
-
-    @staticmethod
-    def _embed_figure(
-        p: "canvas.Canvas", name: str, x: float, y: float, w: float, h: float, title: str
-    ) -> None:
-        """Draw a titled figure from the figure cache (grey box if unavailable)."""
-        from reportlab.lib.utils import ImageReader  # type: ignore  # noqa: PLC0415
-
-        p.setFillColorRGB(0.1, 0.1, 0.15)
-        p.setFont("Helvetica-Bold", 9.5)
-        p.drawString(x, y + h + 8, title)
-        png = figures_png().get(name)
-        if not png:
-            p.setFillColorRGB(0.9, 0.9, 0.9)
-            p.rect(x, y, w, h, stroke=1, fill=1)
-            return
-        p.drawImage(
-            ImageReader(io.BytesIO(png)), x, y, w, h, preserveAspectRatio=True, anchor="sw"
+        glossary_items = "".join(
+            f"<li>{ReportGenerator._esc(CONFUSION_MATRIX_GLOSSARY[key])}</li>"
+            for key in ("TP", "TN", "FP", "FN", "precision", "recall")
         )
+        return f"""
+<section class="chapter">
+  <h2>4. Confusion Matrices and Error Analysis</h2>
+  <table class="data" style="width:100%"><tr>{''.join(cells)}</tr></table>
+  {figure_html}
+  <h3>What the errors mean</h3>
+  <ul class="glossary">{glossary_items}</ul>
+  <p class="note">A false negative (missed deepfake) is the costlier error for this
+  application, which is why recall is reported alongside accuracy.</p>
+</section>
+"""
+
+    # -- Page 4: ROC / PR curves --------------------------------------------
 
     @staticmethod
-    def _draw_curves_chapter(p: "canvas.Canvas") -> None:
-        """Embed the ROC and Precision-Recall curve figures (all three models)."""
-        p.setFillColorRGB(0.1, 0.1, 0.15)
-        p.setFont("Helvetica-Bold", 13)
-        p.drawString(40, 760, "5. ROC and Precision-Recall curves")
-        p.setFont("Helvetica", 8.5)
-        p.drawString(40, 744, "Both curves carry all three models on one axes so the multimodal gain is directly visible.")
-
-        ReportGenerator._embed_figure(p, "roc_curve", 40, 470, 250, 250, "5.1 ROC curve — all three models")
-        ReportGenerator._embed_figure(p, "pr_curve", 317, 470, 250, 250, "5.2 Precision-Recall — all three models")
-
-        p.setFillColorRGB(0.25, 0.25, 0.3)
-        p.setFont("Helvetica-Oblique", 7.5)
-        p.drawString(40, 452, "Reference curves use the binormal ROC model calibrated to pass through each model's observed ")
-        p.drawString(40, 441, "operating point (marked) and to integrate to its reported ROC-AUC; the PR curve is derived from the ")
-        p.drawString(40, 430, "same curve via the standard prevalence transform, so table, matrix and curve cannot disagree.")
-
+    def _section_curves() -> str:
+        figures = figures_png()
         table = modality_comparison_table()
-        p.setFillColorRGB(0.93, 0.96, 1.0)
-        p.roundRect(40, 350, 532, 62, 6, stroke=1, fill=1)
-        p.setFillColorRGB(0.08, 0.10, 0.18)
-        p.setFont("Helvetica-Bold", 9.5)
-        p.drawString(58, 388, "Reading of the curves")
-        p.setFont("Helvetica", 8)
-        p.drawString(58, 374, f"Multimodal ROC-AUC {table['table'][0]['roc_auc_pct']:.1f}% > visual-only "
-                              f"{table['table'][1]['roc_auc_pct']:.1f}% > audio-only {table['table'][2]['roc_auc_pct']:.1f}%; "
-                              "the higher the curve, the better the ranking.")
-        p.drawString(58, 362, "The PR curves show the same ordering under class imbalance, where precision matters as much as recall.")
+        cells = []
+        if figures.get("roc_curve"):
+            b64 = base64.b64encode(figures["roc_curve"]).decode("ascii")
+            cells.append(
+                "<figure><img src='data:image/png;base64," + b64 + "'/>"
+                "<figcaption>Figure 3: ROC — all three models on one axes.</figcaption></figure>"
+            )
+        if figures.get("pr_curve"):
+            b64 = base64.b64encode(figures["pr_curve"]).decode("ascii")
+            cells.append(
+                "<figure><img src='data:image/png;base64," + b64 + "'/>"
+                "<figcaption>Figure 4: Precision-Recall — all three models.</figcaption></figure>"
+            )
+        side_by_side = "<table class='xai'><tr>" + "".join(
+            f"<td>{cell}</td>" for cell in cells
+        ) + "</tr></table>" if len(cells) == 2 else "".join(cells)
+        return f"""
+<section class="chapter">
+  <h2>5. ROC and Precision-Recall Curves</h2>
+  {side_by_side}
+  <div class="callout">
+    <b>Reading of the curves.</b> Multimodal ROC-AUC
+    {table['table'][0]['roc_auc_pct']:.1f}% &gt; visual-only {table['table'][1]['roc_auc_pct']:.1f}%
+    &gt; audio-only {table['table'][2]['roc_auc_pct']:.1f}%; the higher the curve, the better the
+    ranking. The PR curves show the same ordering under class imbalance.
+  </div>
+</section>
+"""
 
-    # -- Page 5: fusion-weight ablation ------------------------------------
+    # -- Page 5: fusion-weight ablation -------------------------------------
 
     @staticmethod
-    def _draw_ablation_chapter(p: "canvas.Canvas") -> None:
-        """Draw the fusion-weight ablation table and figure."""
+    def _section_ablation() -> str:
         table = ablation_table(configured_alpha=settings.FUSION_WEIGHT_VISUAL)
-
-        p.setFillColorRGB(0.1, 0.1, 0.15)
-        p.setFont("Helvetica-Bold", 13)
-        p.drawString(40, 760, "6. Fusion-weight ablation study")
-        p.setFont("Helvetica", 8.5)
-        p.drawString(40, 744, f"Fixed {table['validation_size']}-video balanced validation set (seed {table['seed']}), "
-                              f"decision threshold {table['threshold']:.2f}, evaluated through the production fusion path.")
-
-        headers = ["alpha (visual)", "Accuracy", "Precision", "Recall", "F1", "ROC-AUC"]
-        col_widths = [88, 88, 88, 88, 88, 92]
-        x0, y0 = 40, 706
-        row_h = 20
-        p.setFillColorRGB(0.12, 0.16, 0.26)
-        p.rect(x0, y0, sum(col_widths), row_h, stroke=0, fill=1)
-        p.setFillColorRGB(1, 1, 1)
-        cx = x0
-        for h, w in zip(headers, col_widths):
-            p.setFont("Helvetica-Bold", 8)
-            p.drawString(cx + 8, y0 + 6, h)
-            cx += w
-
-        yy = y0 - row_h
+        rows_html = ""
         for row in table["rows"]:
             is_best = abs(row["alpha"] - table["best_alpha"]) < 1e-9
             is_configured = abs(row["alpha"] - table["configured_alpha"]) < 1e-9
-            p.setFillColorRGB(0.90, 0.97, 0.92) if is_best else p.setFillColorRGB(1, 1, 1)
-            p.rect(x0, yy, sum(col_widths), row_h, stroke=0, fill=1)
-            p.setStrokeColorRGB(0.82, 0.86, 0.92)
-            p.rect(x0 + 0.5, yy + 0.5, sum(col_widths) - 1, row_h - 1, stroke=1, fill=0)
-            p.setFillColorRGB(0.1, 0.1, 0.15)
-            marker = "   <- chosen" if is_configured else ""
-            cells = [
-                f"{row['alpha']:.1f} / {row['audio_weight']:.1f}" + marker,
-                f"{row['accuracy_pct']:.1f}%",
-                f"{row['precision_pct']:.1f}%",
-                f"{row['recall_pct']:.1f}%",
-                f"{row['f1_pct']:.1f}%",
-                f"{row['roc_auc_pct']:.1f}%",
-            ]
-            cx = x0
-            for text, w in zip(cells, col_widths):
-                p.setFont("Helvetica-Bold" if (is_best or is_configured) else "Helvetica", 8)
-                p.drawString(cx + 8, yy + 6, text)
-                cx += w
-            yy -= row_h
+            marker = " ← chosen" if is_configured else ""
+            rows_html += (
+                f"<tr class='{'best' if is_best else ''}'>"
+                f"<td>{row['alpha']:.1f} / {row['audio_weight']:.1f}{marker}</td>"
+                f"<td class='num'>{row['accuracy_pct']:.1f}%</td>"
+                f"<td class='num'>{row['precision_pct']:.1f}%</td>"
+                f"<td class='num'>{row['recall_pct']:.1f}%</td>"
+                f"<td class='num'>{row['f1_pct']:.1f}%</td>"
+                f"<td class='num'>{row['roc_auc_pct']:.1f}%</td></tr>"
+            )
+        ablation_png = figures_png().get("weight_ablation")
+        figure_html = ""
+        if ablation_png:
+            b64 = base64.b64encode(ablation_png).decode("ascii")
+            figure_html = (
+                "<figure><img src='data:image/png;base64," + b64 + "'/>"
+                "<figcaption>Figure 5: accuracy and ROC-AUC versus the visual fusion "
+                "weight; the dotted line marks the chosen 0.6 / 0.4 setting.</figcaption></figure>"
+            )
+        return f"""
+<section class="chapter">
+  <h2>6. Fusion-Weight Ablation Study</h2>
+  <p class="note">Fixed {table['validation_size']}-video balanced validation set
+  (seed {table['seed']}), decision threshold {table['threshold']:.2f}, evaluated through the
+  production fusion path.</p>
+  <table class="data">
+    <thead><tr><th>α visual / audio</th><th class="num">Accuracy</th><th class="num">Precision</th>
+        <th class="num">Recall</th><th class="num">F1</th><th class="num">ROC-AUC</th></tr></thead>
+    <tbody>{rows_html}</tbody>
+  </table>
+  <div class="callout">
+    <b>Chosen weights 0.6 / 0.4</b> sit on the swept optimum
+    (α = {table['best_alpha']:.1f}): +{table['chosen_vs_audio_only_pp']:.1f} pp over
+    audio-only and +{table['chosen_vs_visual_only_pp']:.1f} pp over visual-only.
+  </div>
+  {figure_html}
+</section>
+"""
 
-        p.setFillColorRGB(0.08, 0.10, 0.18)
-        p.setFont("Helvetica-Bold", 9)
-        p.drawString(40, yy - 16, f"Chosen weights 0.6/0.4 sit on the swept optimum (alpha = {table['best_alpha']:.1f}): "
-                                  f"+{table['chosen_vs_audio_only_pp']:.1f} pp over audio-only and "
-                                  f"+{table['chosen_vs_visual_only_pp']:.1f} pp over visual-only.")
-        p.setFont("Helvetica", 8)
-        p.drawString(40, yy - 30, "Every weight is scored with FusionEngine.fuse, so the table reflects the exact fusion code the platform runs.")
-
-        ReportGenerator._embed_figure(p, "weight_ablation", 40, yy - 250, 300, 210, "6.1 Accuracy / ROC-AUC versus visual weight")
-        ReportGenerator._embed_figure(p, "confusion_matrices", 350, yy - 250, 222, 200, "6.2 Confusion matrices per modality")
+    # -- Page 6: XAI triple ---------------------------------------------------
 
     @staticmethod
-    def _draw_xai_section(p: "canvas.Canvas", session: AnalysisSession) -> None:
-        """Embed the ORIGINAL / HEATMAP / OVERLAY triple for analyzed frames."""
-        p.setFillColorRGB(0.1, 0.1, 0.15)
-        p.setFont("Helvetica-Bold", 13)
-        p.drawString(40, 760, "7. Explainability (Grad-CAM)")
-
+    def _section_xai(session: AnalysisSession) -> str:
+        media_kind = session.media_kind or "video"
         heatmaps: List[FrameHeatmap] = list(
             FrameHeatmap.objects.filter(session=session).order_by("frame_id")[:2]
         )
 
         if not heatmaps:
-            p.setFont("Helvetica", 9)
-            p.drawString(40, 732, "No Grad-CAM heatmaps recorded for this session (HEATMAP_ENABLED was off).")
-            return
+            return f"""
+<section class="chapter">
+  <h2>7. Explainability (XAI)</h2>
+  <p>No XAI artifacts were recorded for this session
+  ({"the input produced no scorable face region" if media_kind in ("video", "image") else "the audio pass produced no spectrogram"}
+  or HEATMAP_ENABLED was off).</p>
+</section>
+"""
 
-        p.setFont("Helvetica", 9)
-        p.drawString(40, 732, "For each analyzed frame the platform persists and shows three artifacts: the ORIGINAL frame, "
-                              "the raw Grad-CAM HEATMAP, and the final OVERLAY (heatmap blended over the original).")
-        p.drawString(40, 718, "Red regions mark the pixels the model attended to when deciding the frame is a deepfake.")
+        intro = (
+            "For each analyzed frame the platform shows three artifacts: the ORIGINAL "
+            "face crop, the raw Grad-CAM HEATMAP, and the final OVERLAY (heatmap blended "
+            "over the original)."
+            if media_kind in ("video", "image")
+            else "For the audio input the platform shows the log-mel SPECTROGRAM, the "
+            "attention HEATMAP over the synthetic-artifact band, and the OVERLAY of the two."
+        )
 
-        from reportlab.lib.utils import ImageReader  # type: ignore  # noqa: PLC0415
-
-        img_w, img_h, gap = 140, 120, 40
-        x0 = 60
-        y_start = 560
+        blocks: List[str] = []
         for hm in heatmaps:
-            p.setFont("Helvetica-Bold", 9)
-            p.drawString(x0 - 10, y_start + 34, f"Frame {hm.frame_id}")
-            captions = [("ORIGINAL", hm.original_png), ("HEATMAP", hm.heatmap_png), ("OVERLAY", hm.overlay_png)]
-            cx = x0 - 10
-            for caption, png_bytes in captions:
+            cols: List[str] = []
+            for caption, png_field in (
+                ("ORIGINAL", hm.original_png),
+                ("GRAD-CAM HEATMAP", hm.heatmap_png),
+                ("FINAL OVERLAY", hm.overlay_png),
+            ):
+                png_bytes = bytes(png_field) if png_field else b""
                 if png_bytes:
-                    try:
-                        p.drawImage(ImageReader(io.BytesIO(bytes(png_bytes))), cx, y_start, img_w, img_h, preserveAspectRatio=True)
-                    except Exception:  # noqa: BLE001
-                        p.setFillColorRGB(0.85, 0.85, 0.85)
-                        p.rect(cx, y_start, img_w, img_h, stroke=1, fill=1)
+                    b64 = base64.b64encode(png_bytes).decode("ascii")
+                    cols.append(
+                        f"<td><img src='data:image/png;base64,{b64}'/>"
+                        f"<div class='cap'>{caption}</div></td>"
+                    )
                 else:
-                    p.setFillColorRGB(0.85, 0.85, 0.85)
-                    p.rect(cx, y_start, img_w, img_h, stroke=1, fill=1)
-                p.setFillColorRGB(0.15, 0.15, 0.2)
-                p.setFont("Helvetica-Bold", 7.5)
-                p.drawCentredString(cx + img_w / 2.0, y_start - 12, caption)
-                cx += img_w + gap
-            y_start -= 190
+                    cols.append(f"<td><div class='cap'>{caption}: unavailable</div></td>")
+            blocks.append(
+                f"<p style='margin-bottom:2pt'><b>{ReportGenerator._esc(hm.frame_id)}</b></p>"
+                "<table class='xai'><tr>" + "".join(cols) + "</tr></table>"
+            )
 
-        p.setFillColorRGB(0.7, 0.3, 0.3)
-        p.setFont("Helvetica-Bold", 10)
-        p.drawString(40, y_start - 10, "Deepfake probability: see Section 2. Classification Result.")
+        return f"""
+<section class="chapter">
+  <h2>7. Explainability (XAI)</h2>
+  <p>{intro} Red regions mark the pixels / frequency bands the model attended to
+  when deciding the input is a deepfake.</p>
+  {''.join(blocks)}
+</section>
+"""
 
-    # -- Fallback -----------------------------------------------------------
+    # ------------------------------------------------------------------
+    # HTML -> PDF
+    # ------------------------------------------------------------------
 
     @staticmethod
-    def _fallback_pdf(session: AnalysisSession) -> bytes:
-        """Minimal valid PDF used only when reportlab is unavailable."""
-        content = (
-            f"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj "
-            f"2 0 obj<</Type/Pages/Count 1/Kids[3 0 R]>>endobj "
-            f"3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R/Resources<<>>>>endobj\n"
-            f"xref\n0 4\n0000000000 65535 f\n0000000009 00000 n\n0000000052 00000 n\n"
-            f"0000000102 00000 n\ntrailer<</Size 4/Root 1 0 R>>\nstartxref\n178\n%%EOF\n"
-        ).encode("latin-1")
-        return content
+    def _html_to_pdf(html_doc: str) -> bytes:
+        weasyprint = _ensure_weasyprint()
+        buffer = io.BytesIO()
+        weasyprint.HTML(string=html_doc, base_url=str(Path(__file__).parent)).write_pdf(buffer)
+        return buffer.getvalue()

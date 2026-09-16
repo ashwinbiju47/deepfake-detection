@@ -1,14 +1,15 @@
 """API views for the detection app.
 
-Provides the health endpoint and the file-upload intake endpoint
-(``POST /api/analyses``, Requirement 1). The upload view is a thin adapter: it
-delegates all validation and session creation to
-:class:`detection.services.upload.UploadService` and maps the typed
-``UploadResult`` onto HTTP responses (``202`` on acceptance, an appropriate
-``4xx`` on rejection).
+Provides the health endpoint, the file-upload intake endpoint
+(``POST /api/analyses``, Requirement 1), the session-status endpoint used by
+the dashboard to show the metrics of the last analysis, and the evaluation
+endpoints. The upload view is a thin adapter: it delegates all validation and
+session creation to :class:`detection.services.upload.UploadService` and maps
+the typed ``UploadResult`` onto HTTP responses (``202`` on acceptance, an
+appropriate ``4xx`` on rejection).
 
-URL submission (Requirement 10) is gated behind ``EXTERNAL_URL_ENABLED`` and
-implemented in a later task; this view leaves a clear extension point for it.
+Only direct file uploads (video / image / audio) are accepted; URL intake has
+been removed by product decision.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.request import Request
 from rest_framework.response import Response
 
+from detection.models import AnalysisSession
 from detection.services.ablation import ablation_table
 from detection.services.benchmark import (
     cross_dataset_table,
@@ -51,7 +53,6 @@ def health(_request: Request) -> Response:
         {
             "status": "ok",
             "feature_flags": {
-                "external_url_enabled": settings.EXTERNAL_URL_ENABLED,
                 "heatmap_enabled": settings.HEATMAP_ENABLED,
                 "report_enabled": settings.REPORT_ENABLED,
             },
@@ -63,23 +64,35 @@ def health(_request: Request) -> Response:
 @api_view(["POST"])
 @parser_classes([MultiPartParser, FormParser, JSONParser])
 def create_analysis(request: Request) -> Response:
-    """Submit a video for analysis (``POST /api/analyses``).
+    """Submit a media file for analysis (``POST /api/analyses``).
 
-    Multipart file uploads are validated and accepted by the ``UploadService``.
+    Accepts **video, image, or audio** files (multipart). URL submission has
+    been removed: a request carrying a ``url`` field instead of a file is
+    rejected with ``URL_NOT_SUPPORTED`` so clients get a clear signal rather
+    than a generic 400.
+
     A successful submission returns ``202 Accepted`` with the new
     ``session_id``; a rejected submission returns the matching ``4xx`` status
     with the typed ``error_code`` and message.
-
-    JSON URL submissions are recognized but gated behind
-    ``EXTERNAL_URL_ENABLED`` (Requirement 10, Task 14) — they currently return
-    ``501 Not Implemented`` as a clear extension point.
     """
+    if "url" in request.data and request.FILES.get("file") is None:
+        return Response(
+            {
+                "error_code": "URL_NOT_SUPPORTED",
+                "message": "URL submission is not supported. Upload a video, image, or audio file.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     upload = request.FILES.get("file")
     if upload is not None:
         result = UploadService().submit_file(upload)
         if result["accepted"]:
             return Response(
-                {"session_id": result["session_id"]},
+                {
+                    "session_id": result["session_id"],
+                    "media_kind": result.get("media_kind"),
+                },
                 status=status.HTTP_202_ACCEPTED,
             )
         return Response(
@@ -89,36 +102,70 @@ def create_analysis(request: Request) -> Response:
             ),
         )
 
-    # --- URL submission (Requirement 10, Task 14) ------------------------
-    if "url" in request.data:
-        url_str = str(request.data.get("url") or "")
-        result = UploadService().submit_url(url_str)
-        if result["accepted"]:
-            return Response(
-                {"session_id": result["session_id"]},
-                status=status.HTTP_202_ACCEPTED,
-            )
-        error_code = result["error_code"] or "BAD_REQUEST"
-        status_code = status.HTTP_400_BAD_REQUEST
-        if error_code == "BAD_SCHEME" or error_code == "URL_INPUT_DISABLED":
-            status_code = status.HTTP_400_BAD_REQUEST
-        elif error_code == "TOO_LARGE":
-            status_code = status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
-        elif error_code == "URL_UNREACHABLE" or error_code == "UNDECODABLE":
-            status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
-
-        return Response(
-            {"error_code": error_code, "message": result["message"]},
-            status=status_code,
-        )
-
-
     return Response(
         {
             "error_code": "NO_INPUT",
             "message": "No file was provided. Submit a multipart 'file' field.",
         },
         status=status.HTTP_400_BAD_REQUEST,
+    )
+
+
+@api_view(["GET"])
+def get_analysis(_request: Request, session_id: str) -> Response:
+    """Fetch the metrics of one analysis session (``GET /api/analyses/{id}``).
+
+    Returns the persisted per-modality evidence and the fused classification
+    for the session, so the dashboard can show the metrics **of the last
+    analysis** rather than constant reference numbers.
+    """
+    try:
+        session = AnalysisSession.objects.get(id=session_id)
+    except (AnalysisSession.DoesNotExist, ValueError):
+        return Response(
+            {"error_code": "NOT_FOUND", "message": "Analysis session not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    visual = getattr(session, "visual_result", None)
+    audio = getattr(session, "audio_result", None)
+    fusion = getattr(session, "fusion_result", None)
+
+    return Response(
+        {
+            "id": str(session.id),
+            "status": session.status,
+            "media_kind": session.media_kind,
+            "source_ref": session.source_ref,
+            "media_state": session.media_state,
+            "created_at": session.created_at.isoformat() if session.created_at else None,
+            "completed_at": session.completed_at.isoformat() if session.completed_at else None,
+            "visual": {
+                "likelihood": visual.aggregate_likelihood if visual else None,
+                "state": visual.state if visual else None,
+                "frames_analyzed": visual.frames_analyzed if visual else 0,
+                "faces_isolated": visual.faces_isolated if visual else 0,
+                "error_detail": visual.error_detail if visual else "",
+            },
+            "audio": {
+                "likelihood": audio.likelihood if audio else None,
+                "state": audio.state if audio else None,
+                "error_detail": audio.error_detail if audio else "",
+            },
+            "fusion": (
+                {
+                    "score": fusion.score,
+                    "label": fusion.label,
+                    "modalities_used": (
+                        fusion.modalities_used.split(",") if fusion.modalities_used else []
+                    ),
+                    "inconclusive": fusion.inconclusive,
+                    "threshold_used": fusion.threshold_used,
+                }
+                if fusion
+                else None
+            ),
+        }
     )
 
 

@@ -197,7 +197,9 @@ def pr_figure() -> Optional[bytes]:
 def ablation_figure() -> Optional[bytes]:
     """Accuracy / ROC-AUC against the visual fusion weight."""
     try:
-        fig, ax = _new_figure((6.8, 4.6))
+        # Wide and short: matches the ablation table's aspect so the figure
+        # shares the report page with the table instead of spilling over.
+        fig, ax = _new_figure((7.2, 3.0))
     except Exception:  # noqa: BLE001 - matplotlib unavailable
         return None
 

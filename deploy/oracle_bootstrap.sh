@@ -61,7 +61,6 @@ POSTGRES_DB=deepfake
 POSTGRES_USER=deepfake
 POSTGRES_PASSWORD=$(python3 -c "import secrets; print(secrets.token_urlsafe(24))" 2>/dev/null || openssl rand -base64 24)
 DJANGO_SERVE_SPA=true
-EXTERNAL_URL_ENABLED=true
 HEATMAP_ENABLED=true
 REPORT_ENABLED=true
 CELERY_WORKER_CONCURRENCY=4

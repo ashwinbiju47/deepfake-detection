@@ -68,6 +68,51 @@ class AudioModelError(Exception):
     """Raised when audio model inference fails explicitly."""
 
 
+def spectrogram_attention_map(
+    data: Any, size: int = 12
+) -> Optional[List[List[float]]]:
+    """Deterministic Grad-CAM-style attention map over a log-mel spectrogram.
+
+    The audio reference model scores the **upper-band** spectral energy (the
+    synthetic-speech artifact region), so the explanation highlights exactly
+    that region: attention concentrates on the upper third of the mel bins,
+    weighted by how much energy each (mel, time) cell actually carries. Pure
+    function of the spectrogram, so the same audio always yields the same map.
+    """
+    if data is None:
+        return None
+    try:
+        import numpy as np  # type: ignore  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        spec = np.asarray(data, dtype="float64")
+    except Exception:  # noqa: BLE001
+        return None
+    if spec.ndim != 2 or spec.size == 0:
+        return None
+
+    n_mels, n_time = spec.shape
+    # Downsample the spectrogram to the attention-map grid deterministically.
+    mel_idx = np.linspace(0, n_mels - 1, size).astype(int)
+    time_idx = np.linspace(0, max(n_time - 1, 0), size).astype(int)
+    grid = spec[np.ix_(mel_idx, time_idx)]
+
+    lo, hi = float(grid.min()), float(grid.max())
+    if hi - lo < 1e-9:
+        return [[0.0 for _ in range(size)] for _ in range(size)]
+    norm = (grid - lo) / (hi - lo)  # [0, 1] energy weight per cell
+
+    # Upper-band emphasis: the region the reference model actually attends to.
+    mel_pos = np.linspace(0.0, 1.0, size)
+    emphasis = np.clip((mel_pos - 0.55) / 0.45, 0.0, 1.0) ** 2
+
+    return [
+        [float(np.clip(norm[r, c] * (0.25 + 0.75 * emphasis[r]), 0.0, 1.0)) for c in range(size)]
+        for r in range(size)
+    ]
+
+
 class AudioModel:
     """Audio CNN / ResNet spectrogram classification wrapper.
 

@@ -321,6 +321,74 @@ class FrameExtractor:
 
     # -- orchestrator-facing pass (Requirements 2.4, 2.5) -------------------
 
+    def extract_visual_signal_from_image(
+        self,
+        image_path: str,
+        min_area_ratio: float = 0.05,
+    ) -> ExtractionOutcome:
+        """Run the extract-and-isolate pass over a **single still image**.
+
+        Used for image uploads: the whole image is treated as one frame, run
+        through the same face detector and the same 5%-area threshold as video
+        frames. The state mapping is identical to :meth:`extract_visual_signal`:
+
+        * ``VISUAL_ERROR`` — the image cannot be read at all.
+        * ``NO_VISUAL_SIGNAL`` — the image read fine but no face met the
+          threshold.
+        * ``OK`` — at least one facial region was isolated.
+        """
+        frame = self._image_frame(image_path)
+        if frame is None:
+            return ExtractionOutcome(
+                state=VisualSignalState.VISUAL_ERROR,
+                frames_analyzed=0,
+                faces_isolated=0,
+                faces=[],
+                error_detail=f"could not read image: {image_path}",
+            )
+
+        faces = self.isolate_faces(frame, min_area_ratio=min_area_ratio)
+        if not faces:
+            return ExtractionOutcome(
+                state=VisualSignalState.NO_VISUAL_SIGNAL,
+                frames_analyzed=1,
+                faces_isolated=0,
+                faces=[],
+                error_detail="",
+            )
+        return ExtractionOutcome(
+            state=VisualSignalState.OK,
+            frames_analyzed=1,
+            faces_isolated=len(faces),
+            faces=faces,
+            error_detail="",
+        )
+
+    def _image_frame(self, image_path: str) -> Frame | None:
+        """Decode a still image into a single :class:`Frame` (lazy cv2)."""
+        try:
+            import cv2  # type: ignore  # noqa: PLC0415 - intentional lazy import
+            import numpy as np  # type: ignore  # noqa: PLC0415
+        except Exception:  # noqa: BLE001
+            return None
+        try:
+            data = np.fromfile(image_path, dtype="uint8")
+            if data.size == 0:
+                return None
+            image = cv2.imdecode(data, cv2.IMREAD_COLOR)
+            if image is None or getattr(image, "size", 0) == 0:
+                return None
+            height, width = image.shape[:2]
+            return Frame(
+                index=0,
+                timestamp=0.0,
+                width=int(width),
+                height=int(height),
+                image=image,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
     def extract_visual_signal(
         self,
         video_path: str,

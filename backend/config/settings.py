@@ -241,7 +241,6 @@ MEDIA_URL = "media/"
 # ORIGINAL + HEATMAP + OVERLAY triple and offers a PDF download), so an
 # out-of-the-box run must not answer REPORT_DISABLED. Set the env var to
 # ``false`` to turn either feature off explicitly.
-EXTERNAL_URL_ENABLED = env_bool("EXTERNAL_URL_ENABLED", False)
 HEATMAP_ENABLED = env_bool("HEATMAP_ENABLED", True)
 REPORT_ENABLED = env_bool("REPORT_ENABLED", True)
 
@@ -252,8 +251,14 @@ HEATMAP_MAX_FRAMES = env_int_clamped("HEATMAP_MAX_FRAMES", 3, 1, 20)
 # ---------------------------------------------------------------------------
 # Domain configuration: upload limits, decision threshold, fusion weights
 # ---------------------------------------------------------------------------
-# Supported video container formats (Requirement 1).
-SUPPORTED_VIDEO_FORMATS = env_list("SUPPORTED_VIDEO_FORMATS", "mp4,avi")
+# Supported input formats by media kind (Requirement 1, extended): the intake
+# accepts video, image and audio files. Videos exercise the full multimodal
+# pipeline; images run the visual branch only; audio files run the audio branch
+# only. The first setting keeps its historical name because the upload tests
+# and several consumers reference it.
+SUPPORTED_VIDEO_FORMATS = env_list("SUPPORTED_VIDEO_FORMATS", "mp4,avi,mov,mkv,webm")
+SUPPORTED_IMAGE_FORMATS = env_list("SUPPORTED_IMAGE_FORMATS", "jpg,jpeg,png,webp,bmp")
+SUPPORTED_AUDIO_FORMATS = env_list("SUPPORTED_AUDIO_FORMATS", "wav,mp3,flac,ogg,m4a")
 
 # Hard upload size limit: 50 MB inclusive (Requirements 1.1, 1.3, 10.6).
 MAX_UPLOAD_SIZE_BYTES = env_int_clamped(
@@ -275,8 +280,7 @@ DECISION_THRESHOLD = env_float_clamped("DECISION_THRESHOLD", 0.5, 0.0, 1.0)
 FUSION_WEIGHT_VISUAL = env_float_clamped("FUSION_WEIGHT_VISUAL", 0.6, 0.0, 1.0)
 FUSION_WEIGHT_AUDIO = env_float_clamped("FUSION_WEIGHT_AUDIO", 0.4, 0.0, 1.0)
 
-# External URL retrieval timeout in seconds (Requirement 10.4).
-URL_FETCH_TIMEOUT_SECONDS = env_int_clamped("URL_FETCH_TIMEOUT_SECONDS", 30, 1, 300)
+
 
 # Media purge deadline in seconds after session completion (Requirement 9.1).
 MEDIA_PURGE_DEADLINE_SECONDS = env_int_clamped(
