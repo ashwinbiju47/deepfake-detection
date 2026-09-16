@@ -73,7 +73,9 @@ The `.env` holds the database URL, Redis URL, and feature flags. Relevant flags:
 |---|---|---|
 | `HEATMAP_ENABLED` | Whether Grad-CAM-style XAI overlays are generated/streamed | true |
 | `REPORT_ENABLED` | Whether the PDF report endpoint is reachable | true |
-| `EXTERNAL_URL_ENABLED` | Whether external-video-URL submissions are accepted | false (exercised in tests) |
+| `SUPPORTED_VIDEO_FORMATS` | Video extensions accepted at intake | mp4,avi,mov,mkv,webm |
+| `SUPPORTED_IMAGE_FORMATS` | Image extensions accepted at intake | jpg,jpeg,png,webp,bmp |
+| `SUPPORTED_AUDIO_FORMATS` | Audio extensions accepted at intake | wav,mp3,flac,ogg,m4a |
 
 ### Database: migrate
 
@@ -151,12 +153,19 @@ the backend off 8000.)
 
 ### The intake page
 
-The landing page (`/`) is the **Deepfake Detection Intake** form with two tabs:
+The landing page (`/`) is the **Deepfake Detection Intake** form. It accepts a
+single media file — **video, image, or audio** — detects the kind from the
+extension, and runs the matching pipeline:
 
-- **Upload Video File** — pick a local MP4/AVI (up to the configured size limit) and
-  press **Analyze Video**.
-- **External Video URL** — paste a URL and submit (only works if `EXTERNAL_URL_ENABLED`
-  is true in `.env`).
+- **Video** (mp4/avi/mov/mkv/webm) — full multimodal pipeline (visual + audio +
+  fusion + Grad-CAM).
+- **Image** (jpg/jpeg/png/webp/bmp) — visual branch only (face detection,
+  visual model, Grad-CAM over the image); no audio analysis.
+- **Audio** (wav/mp3/flac/ogg/m4a) — audio branch only (mel-spectrogram scoring
+  and a spectrogram attention map as the XAI view).
+
+URL submission has been removed by product decision; sending a `url` payload to
+the API returns `400 URL_NOT_SUPPORTED`.
 
 ### Live pipeline
 
@@ -273,7 +282,10 @@ DJANGO_SETTINGS_MODULE=config.settings .venv/bin/python manage.py migrate
 - **No heatmap / no PDF in the UI.** Both default **on** now (`HEATMAP_ENABLED` /
   `REPORT_ENABLED` in `.env`); if a checkout sets them to false the PDF button shows
   a clear "report disabled" notice instead of throwing.
-- **External URL submit fails.** Gate is `EXTERNAL_URL_ENABLED` in `.env`.
+- **Upload rejected as unsupported format.** The accepted extension lists come from
+  `SUPPORTED_VIDEO_FORMATS` / `SUPPORTED_IMAGE_FORMATS` / `SUPPORTED_AUDIO_FORMATS`
+  in `.env` (and the settings defaults). If your `.env` still says `mp4,avi` only,
+  update it to the new default to accept images/audio too.
 
 ---
 

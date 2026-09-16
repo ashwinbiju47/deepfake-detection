@@ -30,15 +30,23 @@ _UNIT_INTERVAL = (MinValueValidator(0.0), MaxValueValidator(1.0))
 
 
 class AnalysisSession(models.Model):
-    """A single end-to-end processing job for one video input (ERD: ANALYSIS_SESSION).
+    """A single end-to-end processing job for one media input (ERD: ANALYSIS_SESSION).
 
-    Stores only non-media metadata. ``source_ref`` is a filename or URL string;
-    no media bytes are ever persisted here (Requirement 9.3).
+    Stores only non-media metadata. ``source_ref`` holds the original filename
+    string; no media bytes are ever persisted here (Requirement 9.3).
+    ``media_kind`` records what kind of input was analyzed (video / image /
+    audio) so the dashboard can present the right pipeline and the orchestrator
+    can run only the branches that make sense for the input.
     """
 
     class SourceType(models.TextChoices):
         FILE = "FILE", "File"
         URL = "URL", "URL"
+
+    class MediaKind(models.TextChoices):
+        VIDEO = "video", "Video"
+        IMAGE = "image", "Image"
+        AUDIO = "audio", "Audio"
 
     class Status(models.TextChoices):
         QUEUED = "QUEUED", "Queued"
@@ -54,8 +62,14 @@ class AnalysisSession(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     source_type = models.CharField(max_length=8, choices=SourceType.choices)
-    # Filename or URL only — never media bytes (Requirement 9.3).
+    # Filename only — never media bytes (Requirement 9.3).
     source_ref = models.CharField(max_length=2048)
+    # What kind of media this session analyzes (drives pipeline branching).
+    media_kind = models.CharField(
+        max_length=8,
+        choices=MediaKind.choices,
+        default=MediaKind.VIDEO,
+    )
     status = models.CharField(
         max_length=16, choices=Status.choices, default=Status.QUEUED
     )

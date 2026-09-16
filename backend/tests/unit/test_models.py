@@ -172,6 +172,7 @@ class TestSessionStoresNoMediaBytes:
             "id",
             "source_type",
             "source_ref",
+            "media_kind",
             "status",
             "media_state",
             "created_at",

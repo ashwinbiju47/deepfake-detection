@@ -33,8 +33,14 @@ mtcnn==0.1.1
 mediapipe
 
 # Explainability / reporting
-reportlab==4.2.0
+# WeasyPrint renders the report from semantic HTML (flow layout: text and
+# figures can never overlap, unlike canvas-coordinate drawing). Requires the
+# system Pango/GLib libraries (apt: libpango-1.0-0 libpangocairo-1.0-0
+# libgdk-pixbuf2.0-0; see DEPLOY.md). pydyf is capped < 0.12 because
+# WeasyPrint 62.x calls pydyf.Stream.transform, renamed to set_matrix in
+# pydyf 0.12.
 weasyprint==62.1
+pydyf>=0.10.0,<0.12
 # Evaluation figures (confusion matrices, ROC / precision-recall curves and the
 # fusion-weight ablation chart). pdf/agg backends only - no GUI toolkit needed.
 matplotlib==3.9.4

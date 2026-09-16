@@ -4,8 +4,8 @@
  * serializers; they are the single source of truth on the client side.
  */
 
-/** Supported video container formats accepted by the Upload_Service. */
-export type SupportedFormat = "MP4" | "AVI";
+/** Kinds of media the platform accepts (Requirement 1, extended). */
+export type MediaKind = "video" | "image" | "audio";
 
 /** Typed upload rejection reasons returned by the Upload_Service. */
 export type UploadErrorCode =
@@ -13,8 +13,9 @@ export type UploadErrorCode =
   | "UNSUPPORTED_FORMAT"
   | "TOO_LARGE"
   | "UNDECODABLE"
-  | "BAD_SCHEME"
-  | "URL_UNREACHABLE";
+  | "URL_NOT_SUPPORTED"
+  | "NO_INPUT"
+  | "ENQUEUE_FAILED";
 
 /** Lifecycle status of an Analysis_Session. */
 export type SessionStatus =
@@ -31,11 +32,13 @@ export type MediaState = "PRESENT" | "PURGED";
 /** Classification label produced by the Fusion_Engine. */
 export type ClassificationLabel = "authentic" | "deepfake";
 
-/** Result of submitting a file or URL to the Upload_Service (POST /api/analyses). */
+/** Result of submitting a file to the Upload_Service (POST /api/analyses). */
 export interface UploadResult {
   accepted: boolean;
   /** Set iff `accepted` is true. Wire format: snake_case session_id. */
   session_id: string | null;
+  /** Media kind of the accepted upload (video | image | audio), iff accepted. */
+  media_kind: MediaKind | null;
   /** Set iff `accepted` is false. Wire format: snake_case error_code. */
   error_code: UploadErrorCode | null;
   message: string | null;
@@ -49,17 +52,33 @@ export interface ModalityResult {
 }
 
 /** Session status/result metadata returned by GET /api/analyses/{id}. */
-export interface AnalysisSession {
+export interface AnalysisSessionDetail {
   id: string;
   status: SessionStatus;
-  mediaState: MediaState;
-  /** Classification_Score in [0,1]; null when inconclusive or not yet produced. */
-  score: number | null;
-  label: ClassificationLabel | null;
-  modalitiesUsed: Array<"visual" | "audio">;
-  inconclusive: boolean;
-  createdAt: string;
-  completedAt: string | null;
+  media_kind: MediaKind;
+  source_ref: string;
+  media_state: MediaState;
+  created_at: string | null;
+  completed_at: string | null;
+  visual: {
+    likelihood: number | null;
+    state: string | null;
+    frames_analyzed: number;
+    faces_isolated: number;
+    error_detail: string;
+  };
+  audio: {
+    likelihood: number | null;
+    state: string | null;
+    error_detail: string;
+  };
+  fusion: {
+    score: number | null;
+    label: ClassificationLabel | null;
+    modalities_used: Array<"visual" | "audio">;
+    inconclusive: boolean;
+    threshold_used: number;
+  } | null;
 }
 
 /** Persisted evaluation metrics returned by GET /api/evaluations/{run_id}. */
@@ -124,7 +143,6 @@ export interface CrossDatasetGroup {
 export interface HealthStatus {
   status: string;
   feature_flags: {
-    external_url_enabled: boolean;
     heatmap_enabled: boolean;
     report_enabled: boolean;
   };

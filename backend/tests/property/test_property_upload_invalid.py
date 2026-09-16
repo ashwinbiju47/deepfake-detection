@@ -93,10 +93,10 @@ def _supported_extensions() -> set[str]:
     return {fmt.strip().lower().lstrip(".") for fmt in settings.SUPPORTED_VIDEO_FORMATS}
 
 
-# A pool of extensions that are clearly NOT supported video containers.
+# A pool of extensions that are clearly NOT supported in any media kind
+# (video, image, and audio are all accepted now).
 _UNSUPPORTED_EXT_POOL = [
-    "mkv", "mov", "flv", "wmv", "webm", "txt", "png", "jpg",
-    "exe", "pdf", "zip", "gif", "mp3", "wav", "doc", "",
+    "mkv_x", "flv", "wmv", "txt", "exe", "pdf", "zip", "gif", "doc", "",
 ]
 
 

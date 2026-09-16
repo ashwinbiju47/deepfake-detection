@@ -3,15 +3,15 @@
  *
  * Endpoints (design: Components and Interfaces):
  *
- *   POST /api/analyses                -> submit a file (multipart) or URL (json)
- *   GET  /api/analyses/{id}           -> fetch session status/result metadata
+ *   POST /api/analyses                -> submit a media file (multipart)
+ *   GET  /api/analyses/{id}           -> fetch last-analysis metrics/status
  *   GET  /api/analyses/{id}/report    -> download PDF (WHERE REPORT_ENABLED)
  *   GET  /api/evaluations/{run_id}    -> retrieve persisted evaluation metrics
  *   GET  /api/evaluations/benchmark   -> Results-chapter benchmark tables
  *                                       (modality comparison + cross-dataset)
  */
 import type {
-  AnalysisSession,
+  AnalysisSessionDetail,
   EvaluationBenchmark,
   EvaluationMetrics,
   HealthStatus,
@@ -41,22 +41,15 @@ export class ApiClient {
   }
 
   /**
-   * Submit a video file for analysis (multipart). Returns 202 {session_id} on
-   * acceptance or a typed error on rejection.
+   * Submit a media file (video / image / audio) for analysis (multipart).
+   * Returns 202 {session_id, media_kind} on acceptance or a typed error on
+   * rejection. URL submission is not supported by the backend.
    */
   static async submitFile(file: File, baseUrl = "/api"): Promise<UploadResult> {
     return new ApiClient({ baseUrl }).submitFileInstance(file);
   }
 
-  /**
-   * Submit an external video URL for analysis (json). Gated server-side by
-   * EXTERNAL_URL_ENABLED.
-   */
-  static async submitUrl(url: string, baseUrl = "/api"): Promise<UploadResult> {
-    return new ApiClient({ baseUrl }).submitUrlInstance(url);
-  }
-
-  /** Instance-based submission (used by the static helpers). */
+  /** Instance-based submission (used by the static helper). */
   async submitFileInstance(file: File): Promise<UploadResult> {
     const body = new FormData();
     body.append("file", file);
@@ -67,24 +60,19 @@ export class ApiClient {
     return this.toUploadResult(res);
   }
 
-  async submitUrlInstance(url: string): Promise<UploadResult> {
-    const res = await this.fetchImpl(`${this.baseUrl}/analyses`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url }),
-    });
-    return this.toUploadResult(res);
-  }
-
-  /** Fetch status/result metadata for a session. */
-  async getSession(sessionId: string): Promise<AnalysisSession> {
+  /**
+   * Fetch the metrics of one analysis session (the last analysis when the
+   * dashboard loads with its session id): per-modality evidence plus the
+   * fused classification, straight from the database.
+   */
+  async getSession(sessionId: string): Promise<AnalysisSessionDetail> {
     const res = await this.fetchImpl(
       `${this.baseUrl}/analyses/${encodeURIComponent(sessionId)}`
     );
     if (!res.ok) {
       throw new Error(`getSession failed: ${res.status}`);
     }
-    return (await res.json()) as AnalysisSession;
+    return (await res.json()) as AnalysisSessionDetail;
   }
 
   /**
@@ -154,6 +142,7 @@ export class ApiClient {
       return {
         accepted: true,
         session_id: (data.session_id as string) ?? null,
+        media_kind: (data.media_kind as UploadResult["media_kind"]) ?? null,
         error_code: null,
         message: null,
       };
@@ -161,6 +150,7 @@ export class ApiClient {
     return {
       accepted: false,
       session_id: null,
+      media_kind: null,
       error_code: (data.error_code as UploadResult["error_code"]) ?? null,
       message: (data.message as string) ?? null,
     };

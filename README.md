@@ -34,7 +34,9 @@ Set these variables in **Settings → Variables and secrets**:
 | `DJANGO_ALLOWED_HOSTS` | `*` | accept `.hf.space` hostnames |
 | `DJANGO_DB_ENGINE` | `sqlite` | embedded DB, no external service |
 | `DJANGO_SERVE_SPA` | `true` | serve the built React app same-origin |
-| `EXTERNAL_URL_ENABLED` | `true` | allow analyzing videos by URL |
+| `SUPPORTED_VIDEO_FORMATS` | `mp4,avi,mov,mkv,webm` | video extensions accepted at intake |
+| `SUPPORTED_IMAGE_FORMATS` | `jpg,jpeg,png,webp,bmp` | image extensions accepted at intake |
+| `SUPPORTED_AUDIO_FORMATS` | `wav,mp3,flac,ogg,m4a` | audio extensions accepted at intake |
 | `HEATMAP_ENABLED` | `true` | Grad-CAM heatmap + overlay panels |
 | `REPORT_ENABLED` | `true` | downloadable PDF reports |
 | `CELERY_WORKER_CONCURRENCY` | `2` | worker capacity (2 vCPU) |
