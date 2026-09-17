@@ -60,6 +60,13 @@ class AnalysisSession(models.Model):
         PRESENT = "PRESENT", "Present"
         PURGED = "PURGED", "Purged"
 
+    class GroundTruth(models.TextChoices):
+        # Optional user-declared ground truth, used by the live evaluation
+        # service to build ROC/PR curves and confusion matrices from the
+        # sessions actually analyzed on this deployment. NULL = unlabeled.
+        REAL = "real", "Real"
+        FAKE = "fake", "Fake"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     source_type = models.CharField(max_length=8, choices=SourceType.choices)
     # Filename only — never media bytes (Requirement 9.3).
@@ -72,6 +79,14 @@ class AnalysisSession(models.Model):
     )
     status = models.CharField(
         max_length=16, choices=Status.choices, default=Status.QUEUED
+    )
+    # Optional user-declared ground truth for live evaluation (null = unlabeled).
+    ground_truth = models.CharField(
+        max_length=8,
+        choices=GroundTruth.choices,
+        null=True,
+        blank=True,
+        db_index=True,
     )
     media_state = models.CharField(
         max_length=8, choices=MediaState.choices, default=MediaState.PRESENT

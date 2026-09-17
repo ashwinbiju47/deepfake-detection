@@ -6,6 +6,8 @@ import type {
   CurvesPayload,
   EvaluationBenchmark,
   FigurePayload,
+  LiveConfusionMatrix,
+  LiveEvaluation,
   WeightAblation,
 } from "../api/types";
 
@@ -13,6 +15,12 @@ const VARIANT_COLOR: Record<string, string> = {
   multimodal: "text-teal-300",
   visual_only: "text-sky-300",
   audio_only: "text-amber-300",
+};
+
+const LIVE_VARIANT_COLOR: Record<string, string> = {
+  multimodal: "#2dd4bf",
+  visual_only: "#38bdf8",
+  audio_only: "#fbbf24",
 };
 
 function Figure({ figure, alt }: { figure?: FigurePayload; alt: string }) {
@@ -76,6 +84,51 @@ export const ConfusionMatrixCard: React.FC<{ matrix: ConfusionMatrixSummary }> =
       </div>
       <p className="mt-2 text-xs text-slate-400">{matrix.error_summary}</p>
       <p className="mt-1 text-[11px] text-slate-500">
+        Built from published-dataset test runs — label your own analyses to see
+        live matrices computed from this deployment below.
+      </p>
+    </div>
+  );
+};
+
+/** One LIVE confusion matrix, computed from this deployment's labeled sessions. */
+const LiveMatrixCard: React.FC<{ matrix: LiveConfusionMatrix }> = ({ matrix }) => {
+  const cell = (
+    label: string,
+    value: number,
+    tone: "good" | "bad" | "neutral"
+  ) => (
+    <div
+      className={`rounded-lg border p-2.5 text-center ${
+        tone === "good"
+          ? "border-emerald-600/60 bg-emerald-950/40"
+          : tone === "bad"
+          ? "border-red-600/60 bg-red-950/40"
+          : "border-slate-700 bg-slate-900/60"
+      }`}
+    >
+      <p className="text-[10px] font-bold tracking-wider text-slate-400">{label}</p>
+      <p className="text-xl font-bold text-slate-100">{value}</p>
+    </div>
+  );
+  return (
+    <div className="rounded-xl border border-indigo-500/40 bg-indigo-950/20 p-4">
+      <div className="mb-3 flex items-baseline justify-between">
+        <h5 className={`text-sm font-bold ${VARIANT_COLOR[matrix.variant] ?? ""}`}>
+          {matrix.label}
+        </h5>
+        <span className="text-xs text-indigo-300">
+          accuracy {(matrix.accuracy * 100).toFixed(1)}%
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        {cell("TN · authentic kept", matrix.tn, "good")}
+        {cell("FP · false alarm", matrix.fp, "bad")}
+        {cell("FN · fake missed", matrix.fn, "bad")}
+        {cell("TP · fake caught", matrix.tp, "good")}
+      </div>
+      <p className="mt-2 text-xs text-slate-300">{matrix.error_summary}</p>
+      <p className="mt-1 text-[11px] text-slate-500">
         precision {(matrix.precision * 100).toFixed(1)}% · recall{" "}
         {(matrix.recall * 100).toFixed(1)}% · F1 {(matrix.f1_score * 100).toFixed(1)}%
       </p>
@@ -83,17 +136,145 @@ export const ConfusionMatrixCard: React.FC<{ matrix: ConfusionMatrixSummary }> =
   );
 };
 
+/** A small dependency-free SVG line chart used for the live ROC/PR curves. */
+const LiveCurveChart: React.FC<{
+  title: string;
+  xLabel: string;
+  yLabel: string;
+  series: Array<{ label: string; color: string; points: Array<[number, number]>; metric: string }>;
+}> = ({ title, xLabel, yLabel, series }) => {
+  const SIZE = 260;
+  const PAD = 34;
+  const toXY = (x: number, y: number): [number, number] => [
+    PAD + x * (SIZE - PAD),
+    SIZE - PAD - y * (SIZE - PAD),
+  ];
+  const axisTicks = [0, 0.25, 0.5, 0.75, 1];
+  return (
+    <div className="rounded-xl border border-indigo-500/40 bg-slate-900/60 p-3">
+      <p className="mb-1 text-xs font-bold text-slate-200">{title}</p>
+      <svg viewBox={`0 0 ${SIZE} ${SIZE}`} className="w-full" role="img" aria-label={title}>
+        {/* grid */}
+        {axisTicks.map((t) => {
+          const [gx] = toXY(t, 0);
+          const [, gy] = toXY(0, t);
+          return (
+            <g key={t}>
+              <line x1={gx} y1={SIZE - PAD} x2={gx} y2={PAD} stroke="#1e293b" strokeWidth={1} />
+              <line x1={PAD} y1={gy} x2={SIZE - PAD} y2={gy} stroke="#1e293b" strokeWidth={1} />
+              <text x={gx} y={SIZE - PAD + 12} fontSize={8} fill="#64748b" textAnchor="middle">{t}</text>
+              <text x={PAD - 6} y={gy + 3} fontSize={8} fill="#64748b" textAnchor="end">{t}</text>
+            </g>
+          );
+        })}
+        {/* chance line (ROC) / baseline (PR) */}
+        <line
+          x1={toXY(0, 0)[0]} y1={toXY(0, 0)[1]}
+          x2={toXY(1, 1)[0]} y2={toXY(1, 1)[1]}
+          stroke="#334155" strokeDasharray="4 4" strokeWidth={1}
+        />
+        {series.map((s) => (
+          <polyline
+            key={s.label}
+            points={s.points.map(([x, y]) => toXY(x, y).join(",")).join(" ")}
+            fill="none"
+            stroke={s.color}
+            strokeWidth={2}
+          />
+        ))}
+        <text x={SIZE / 2} y={SIZE - 4} fontSize={9} fill="#94a3b8" textAnchor="middle">{xLabel}</text>
+        <text x={10} y={SIZE / 2} fontSize={9} fill="#94a3b8" textAnchor="middle" transform={`rotate(-90 10 ${SIZE / 2})`}>{yLabel}</text>
+      </svg>
+      <ul className="mt-1 space-y-0.5">
+        {series.map((s) => (
+          <li key={s.label} className="text-[10px] text-slate-400">
+            <span className={s.color} style={{ color: s.color }}>■</span> {s.label} — {s.metric}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+};
+
+/** Live-evaluation section built from THIS deployment's labeled sessions. */
+const LiveEvaluationPanel: React.FC<{ live: LiveEvaluation }> = ({ live }) => {
+  if (!live.available) {
+    return (
+      <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/40 p-4 text-sm text-slate-400">
+        <p className="font-semibold text-slate-300">Live evaluation</p>
+        <p className="mt-1 text-xs">{live.reason}</p>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <h4 className="text-sm font-semibold text-slate-200">
+          Live evaluation — from your labeled analyses on this deployment
+        </h4>
+        <span className="rounded bg-indigo-500/20 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-indigo-300">
+          live ({live.total_labeled_sessions} labeled)
+        </span>
+      </div>
+      {live.confusion_matrices.length > 0 && (
+        <div className="grid gap-3 md:grid-cols-3">
+          {live.confusion_matrices.map((matrix) => (
+            <LiveMatrixCard key={matrix.variant} matrix={matrix} />
+          ))}
+        </div>
+      )}
+      {live.variants.length > 0 && (
+        <div className="grid gap-3 lg:grid-cols-2">
+          <LiveCurveChart
+            title="Live ROC curve (your labeled analyses)"
+            xLabel="False Positive Rate"
+            yLabel="True Positive Rate"
+            series={live.variants.map((v) => ({
+              label: v.label,
+              color: LIVE_VARIANT_COLOR[v.variant] ?? "#38bdf8",
+              points: v.roc.points as Array<[number, number]>,
+              metric: `AUC ${(v.roc.auc * 100).toFixed(1)}% (n=${v.samples})`,
+            }))}
+          />
+          <LiveCurveChart
+            title="Live Precision-Recall curve (your labeled analyses)"
+            xLabel="Recall"
+            yLabel="Precision"
+            series={live.variants.map((v) => ({
+              label: v.label,
+              color: LIVE_VARIANT_COLOR[v.variant] ?? "#38bdf8",
+              points: v.pr.points as Array<[number, number]>,
+              metric: `AP ${(v.pr.average_precision * 100).toFixed(1)}% (n=${v.samples})`,
+            }))}
+          />
+        </div>
+      )}
+    </div>
+  );
+};
+
 /** Confusion matrices + the glossary explaining what each error means. */
-export const ConfusionMatrices: React.FC<{ curves: CurvesPayload }> = ({ curves }) => (
+export const ConfusionMatrices: React.FC<{ curves: CurvesPayload; live?: LiveEvaluation | null }> = ({
+  curves,
+  live,
+}) => (
   <div className="space-y-3">
     <h4 className="text-sm font-semibold text-slate-200">
       Confusion matrices — multimodal, visual-only, audio-only
+      <span className="ml-2 rounded bg-slate-500/20 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+        reference (published datasets)
+      </span>
     </h4>
     <div className="grid gap-3 md:grid-cols-3">
       {curves.confusion_matrices.map((matrix) => (
         <ConfusionMatrixCard key={matrix.variant} matrix={matrix} />
       ))}
     </div>
+    {live && (
+      <div className="border-t border-slate-800 pt-3">
+        <LiveEvaluationPanel live={live} />
+      </div>
+    )}
     <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4 text-xs text-slate-300">
       <p className="mb-2 text-sm font-semibold text-slate-200">What the errors mean</p>
       <ul className="space-y-1">
@@ -193,7 +374,9 @@ export const AblationTable: React.FC<{ ablation: WeightAblation }> = ({ ablation
  * the ROC and Precision-Recall curves (all three models on one axes), and the
  * fusion-weight ablation study.
  */
-export const EvaluationFigures: React.FC = () => {
+export const EvaluationFigures: React.FC<{ refreshKey?: number }> = ({
+  refreshKey = 0,
+}) => {
   const [benchmark, setBenchmark] = useState<EvaluationBenchmark | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -210,7 +393,7 @@ export const EvaluationFigures: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshKey]);
 
   if (error) {
     return (
@@ -229,7 +412,7 @@ export const EvaluationFigures: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <ConfusionMatrices curves={benchmark.curves} />
+      <ConfusionMatrices curves={benchmark.curves} live={benchmark.live_evaluation} />
 
       <div className="grid gap-4 lg:grid-cols-2">
         <div>

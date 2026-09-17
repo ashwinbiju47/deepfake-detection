@@ -29,6 +29,7 @@ from detection.services.benchmark import (
     modality_comparison_table,
 )
 from detection.services.figures import figures_payload
+from detection.services.live_eval import live_evaluation_payload
 from detection.services.upload import (
     ERROR_EMPTY_FILE,
     ERROR_TOO_LARGE,
@@ -138,6 +139,7 @@ def get_analysis(_request: Request, session_id: str) -> Response:
             "media_kind": session.media_kind,
             "source_ref": session.source_ref,
             "media_state": session.media_state,
+            "ground_truth": session.ground_truth,
             "created_at": session.created_at.isoformat() if session.created_at else None,
             "completed_at": session.completed_at.isoformat() if session.completed_at else None,
             "visual": {
@@ -226,8 +228,78 @@ def get_benchmark(_request: Request) -> Response:
             configured_alpha=settings.FUSION_WEIGHT_VISUAL
         ),
         "figures": figures_payload(),
+        # Live evaluation from THIS deployment's labeled sessions (empty
+        # -> {"available": False, "reason": ...} until the user labels
+        # completed analyses as real/fake).
+        "live_evaluation": live_evaluation_payload(),
     }
     return Response(payload)
+
+
+@api_view(["POST"])
+def set_session_ground_truth(request: Request, session_id: str) -> Response:
+    """Declare the ground truth of a completed session (``POST .../ground_truth``).
+
+    Body: ``{"ground_truth": "real" | "fake" | null}``. Labeled sessions feed
+    the live ROC/PR curves and confusion matrices shown next to the
+    published-dataset reference figures.
+    """
+    value = request.data.get("ground_truth", None)
+    if value is not None:
+        value = str(value).strip().lower()
+        valid = AnalysisSession.GroundTruth.values
+        if value not in valid:
+            return Response(
+                {
+                    "error_code": "INVALID_GROUND_TRUTH",
+                    "message": f"ground_truth must be one of {list(valid)} or null.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    try:
+        session = AnalysisSession.objects.get(id=session_id)
+    except (AnalysisSession.DoesNotExist, ValueError):
+        return Response(
+            {"error_code": "NOT_FOUND", "message": "Analysis session not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    session.ground_truth = value
+    session.save(update_fields=["ground_truth"])
+    return Response(
+        {
+            "id": str(session.id),
+            "ground_truth": session.ground_truth,
+            "labeled_sessions": AnalysisSession.objects.exclude(
+                ground_truth__isnull=True
+            ).count(),
+        }
+    )
+
+
+@api_view(["GET"])
+def list_ground_truth(request: Request) -> Response:
+    """List labeled sessions (``GET /api/analyses/ground-truth``)."""
+    sessions = AnalysisSession.objects.exclude(ground_truth__isnull=True).order_by(
+        "-created_at"
+    )[:200]
+    return Response(
+        {
+            "total": sessions.count(),
+            "sessions": [
+                {
+                    "id": str(s.id),
+                    "ground_truth": s.ground_truth,
+                    "status": s.status,
+                    "media_kind": s.media_kind,
+                    "source_ref": s.source_ref,
+                    "created_at": s.created_at.isoformat() if s.created_at else None,
+                }
+                for s in sessions
+            ],
+        }
+    )
 
 
 @api_view(["GET"])

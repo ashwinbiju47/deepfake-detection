@@ -1,5 +1,6 @@
-import React from "react";
-import type { MediaKind } from "../api/types";
+import React, { useCallback, useState } from "react";
+import { ApiClient } from "../api/client";
+import type { GroundTruth, MediaKind } from "../api/types";
 
 interface SessionMetricsProps {
   /** Kind of media analyzed in the last session. */
@@ -17,6 +18,12 @@ interface SessionMetricsProps {
   facesIsolated: number | null;
   modalitiesUsed: Array<"visual" | "audio">;
   threshold: number | null;
+  /** Session id — enables the ground-truth labeling controls. */
+  sessionId?: string | null;
+  /** Current user-declared ground truth for this session, if any. */
+  groundTruth?: GroundTruth;
+  /** Called after a successful label change so live figures can refresh. */
+  onLabeled?: () => void;
 }
 
 function pct(value: number | null | undefined): string {
@@ -59,8 +66,32 @@ export const SessionMetrics: React.FC<SessionMetricsProps> = ({
   facesIsolated,
   modalitiesUsed,
   threshold,
+  sessionId,
+  groundTruth: initialGroundTruth = null,
+  onLabeled,
 }) => {
   const kindLabel = mediaKind ? mediaKind.toUpperCase() : "—";
+  const [groundTruth, setGroundTruth] = useState<GroundTruth>(initialGroundTruth);
+  const [labelBusy, setLabelBusy] = useState(false);
+  const [labelError, setLabelError] = useState<string | null>(null);
+
+  const applyLabel = useCallback(
+    async (value: GroundTruth) => {
+      if (!sessionId || labelBusy) return;
+      setLabelBusy(true);
+      setLabelError(null);
+      try {
+        const res = await new ApiClient().setGroundTruth(sessionId, value);
+        setGroundTruth(res.ground_truth);
+        onLabeled?.();
+      } catch (err) {
+        setLabelError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setLabelBusy(false);
+      }
+    },
+    [sessionId, labelBusy, onLabeled]
+  );
 
   return (
     <div className="space-y-3">
@@ -122,6 +153,63 @@ export const SessionMetrics: React.FC<SessionMetricsProps> = ({
             </span>
           )}
         </p>
+      )}
+
+      {sessionId && (
+        <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold text-slate-300">
+              Is this media real or a deepfake?
+            </span>
+            <span className="text-[10px] text-slate-500">
+              labeled analyses build your own ROC curves &amp; confusion matrices
+            </span>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={labelBusy}
+              onClick={() => void applyLabel("real")}
+              className={`rounded-lg border px-3 py-1.5 text-xs font-bold transition ${
+                groundTruth === "real"
+                  ? "border-emerald-400 bg-emerald-500/25 text-emerald-200"
+                  : "border-slate-700 bg-slate-900 text-slate-300 hover:border-emerald-500/60"
+              } disabled:opacity-50`}
+            >
+              REAL
+            </button>
+            <button
+              type="button"
+              disabled={labelBusy}
+              onClick={() => void applyLabel("fake")}
+              className={`rounded-lg border px-3 py-1.5 text-xs font-bold transition ${
+                groundTruth === "fake"
+                  ? "border-red-400 bg-red-500/25 text-red-200"
+                  : "border-slate-700 bg-slate-900 text-slate-300 hover:border-red-500/60"
+              } disabled:opacity-50`}
+            >
+              DEEPFAKE
+            </button>
+            {groundTruth && (
+              <button
+                type="button"
+                disabled={labelBusy}
+                onClick={() => void applyLabel(null)}
+                className="rounded-lg border border-slate-700 px-2 py-1.5 text-[10px] text-slate-400 hover:text-slate-200 disabled:opacity-50"
+              >
+                clear
+              </button>
+            )}
+            {groundTruth && (
+              <span className="text-[10px] uppercase tracking-wider text-slate-500">
+                labeled: {groundTruth}
+              </span>
+            )}
+            {labelError && (
+              <span className="text-[10px] text-red-300">label failed: {labelError}</span>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

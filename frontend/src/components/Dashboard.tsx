@@ -42,6 +42,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, onReset }) => {
   const [reportBusy, setReportBusy] = useState(false);
   const [reportEnabled, setReportEnabled] = useState(true);
   const [mediaKind, setMediaKind] = useState<MediaKind | null>(null);
+  const [groundTruth, setGroundTruth] = useState<"real" | "fake" | null>(null);
+  // Bumped whenever a session is (re)labeled so the live-evaluation figures
+  // refetch and reflect the new labeled sample.
+  const [labelVersion, setLabelVersion] = useState(0);
 
   // If this session already completed before the dashboard opened (e.g. the
   // user re-opened the app), fetch the persisted last-analysis metrics.
@@ -52,6 +56,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, onReset }) => {
       .then((detail) => {
         if (cancelled) return;
         setMediaKind(detail.media_kind);
+        setGroundTruth(detail.ground_truth);
         if (detail.status === "COMPLETED" || detail.status === "INCONCLUSIVE") {
           setResult({
             score: detail.fusion?.score ?? null,
@@ -322,6 +327,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, onReset }) => {
                   facesIsolated={result.faces_isolated ?? null}
                   modalitiesUsed={result.modalities_used ?? []}
                   threshold={result.threshold ?? null}
+                  sessionId={sessionId}
+                  groundTruth={groundTruth}
+                  onLabeled={() => setLabelVersion((v) => v + 1)}
                 />
               </div>
 
@@ -347,8 +355,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, onReset }) => {
       {/* Results / Evaluation chapter: benchmark tables + figures */}
       <div className="space-y-6 border-t border-slate-800 pt-4">
         <h3 className="text-lg font-bold text-sky-400">Results / Evaluation</h3>
+        <EvaluationFigures refreshKey={labelVersion} />
         <ResultsTable />
-        <EvaluationFigures />
       </div>
     </div>
   );
