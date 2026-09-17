@@ -14,6 +14,7 @@ import type {
   AnalysisSessionDetail,
   EvaluationBenchmark,
   EvaluationMetrics,
+  GroundTruth,
   HealthStatus,
   UploadResult,
 } from "./types";
@@ -121,6 +122,30 @@ export class ApiClient {
       throw new Error(`getEvaluation failed: ${res.status}`);
     }
     return (await res.json()) as EvaluationMetrics;
+  }
+
+  /**
+   * Declare the ground truth (real / fake) of a completed session. Labeled
+   * sessions feed the live ROC/PR curves and confusion matrices shown next
+   * to the published-dataset reference figures.
+   */
+  async setGroundTruth(sessionId: string, value: GroundTruth): Promise<{ id: string; ground_truth: GroundTruth; labeled_sessions: number }> {
+    const res = await this.fetchImpl(
+      `${this.baseUrl}/analyses/${encodeURIComponent(sessionId)}/ground_truth`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ground_truth: value }),
+      }
+    );
+    if (!res.ok) {
+      throw new Error(`setGroundTruth failed: ${res.status}`);
+    }
+    return (await res.json()) as {
+      id: string;
+      ground_truth: GroundTruth;
+      labeled_sessions: number;
+    };
   }
 
   /**

@@ -215,6 +215,17 @@ When the analysis finishes, the dashboard shows:
   for all three models, and the **fusion-weight ablation** study across
   visual/audio weights (the chosen 0.6/0.4 operating point is highlighted).
 
+- **Ground-truth labeling + live evaluation.** After an analysis completes, use the
+  "Is this media real or a deepfake?" controls (REAL / DEEPFAKE buttons) to declare its
+  true label. Labeled sessions feed the **live evaluation** panel: ROC/PR curves and
+  confusion matrices computed from *your own* labeled uploads on this deployment,
+  shown next to the published-dataset reference figures (each clearly badged
+  `reference` vs `live`). Live curves need at least 2 labeled sessions per model
+  variant; until then the panel shows instructions instead of empty charts.
+  `POST /api/analyses/{id}/ground_truth` with `{"ground_truth": "real" | "fake" | null}`
+  sets/clears a label; `GET /api/evaluations/benchmark` returns the `live_evaluation`
+  section alongside the reference data.
+
 - A **Download PDF report** button when `REPORT_ENABLED` is on, generating a 6-page
   report: page 1 = architecture/pipeline diagram (Figure 1), pages 2-3 = the Results /
   Evaluation chapter (metrics table + fusion improvement + cross-dataset), page 4 =
@@ -232,9 +243,10 @@ scores (the baseline models derive scores from content features, not RNG), so th
 |---|---|---|
 | `/api/analyses` | POST | Submit a file (multipart) or URL (json); receive a session id |
 | `/api/analyses/{id}` | GET | Session status + result metadata |
+| `/api/analyses/{id}/ground_truth` | POST | Declare ground truth (`real`/`fake`/`null`) — feeds live evaluation |
 | `/api/analyses/{id}/report` | GET | PDF report (only when `REPORT_ENABLED`) |
 | `/api/evaluations/{run_id}` | GET | Persisted evaluation metrics for a run |
-| `/api/evaluations/benchmark` | GET | The Results-chapter data: modality comparison table + cross-dataset table + ROC/PR curves + confusion matrices + fusion-weight ablation + rendered figure PNGs (JSON) |
+| `/api/evaluations/benchmark` | GET | The Results-chapter data: modality comparison table + cross-dataset table + ROC/PR curves + confusion matrices + fusion-weight ablation + live evaluation from labeled sessions + rendered figure PNGs (JSON) |
 
 The benchmark endpoint is wired to the same structured data the PDF and dashboard render
 from, so a single source backs all three.

@@ -51,6 +51,9 @@ export interface ModalityResult {
   state: string;
 }
 
+/** Optional user-declared ground truth used by live evaluation. */
+export type GroundTruth = "real" | "fake" | null;
+
 /** Session status/result metadata returned by GET /api/analyses/{id}. */
 export interface AnalysisSessionDetail {
   id: string;
@@ -58,6 +61,7 @@ export interface AnalysisSessionDetail {
   media_kind: MediaKind;
   source_ref: string;
   media_state: MediaState;
+  ground_truth: GroundTruth;
   created_at: string | null;
   completed_at: string | null;
   visual: {
@@ -241,6 +245,45 @@ export interface FigurePayload {
   png_base64: string;
 }
 
+/** ----------------------------------------------------------------------
+ *  Live evaluation — curves/metrics built from THIS deployment's labeled
+ *  sessions (as opposed to the published-dataset reference constants).
+ *  ---------------------------------------------------------------------- */
+export interface LiveCurveVariant {
+  variant: "multimodal" | "visual_only" | "audio_only";
+  label: string;
+  samples: number;
+  score_range: { min: number; max: number };
+  roc: { auc: number; points: CurvePoint[] };
+  pr: { average_precision: number; points: CurvePoint[] };
+}
+
+export interface LiveConfusionMatrix {
+  variant: "multimodal" | "visual_only" | "audio_only";
+  label: string;
+  samples: number;
+  threshold: number;
+  tp: number;
+  fp: number;
+  tn: number;
+  fn: number;
+  accuracy: number;
+  precision: number;
+  recall: number;
+  f1_score: number;
+  error_summary: string;
+}
+
+export interface LiveEvaluation {
+  available: boolean;
+  total_labeled_sessions: number;
+  reason: string | null;
+  min_samples: number;
+  variants: LiveCurveVariant[];
+  confusion_matrices: LiveConfusionMatrix[];
+  glossary: Record<string, string>;
+}
+
 /** Full benchmark payload returned by GET /api/evaluations/benchmark. */
 export interface EvaluationBenchmark {
   modality_comparison: ModalityComparison;
@@ -248,4 +291,5 @@ export interface EvaluationBenchmark {
   curves: CurvesPayload;
   weight_ablation: WeightAblation;
   figures: Record<string, FigurePayload>;
+  live_evaluation: LiveEvaluation;
 }

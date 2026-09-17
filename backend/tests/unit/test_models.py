@@ -175,6 +175,7 @@ class TestSessionStoresNoMediaBytes:
             "media_kind",
             "status",
             "media_state",
+            "ground_truth",
             "created_at",
             "started_at",
             "completed_at",
